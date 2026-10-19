@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "zero_downtime_services" jsonb DEFAULT '[]'::jsonb NOT NULL;

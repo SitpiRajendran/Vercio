@@ -1,0 +1,16 @@
+# Service de développement : PostgreSQL pour `pnpm dev`.
+#   docker compose -f docker-compose.dev.yml up -d
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: vercio
+      POSTGRES_PASSWORD: vercio
+      POSTGRES_DB: vercio
+    ports:
+      - '127.0.0.1:9002:5432'
+    volumes:
+      - vercio-dev-db:/var/lib/postgresql/data
+
+volumes:
+  vercio-dev-db:

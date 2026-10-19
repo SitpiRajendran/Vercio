@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'dev/**']
+    # Tags de version : l'image reçoit le même nom (v0.1, v1.2.3).
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vercio_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/vercio_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  # Image publiée sur GHCR selon la convention que Vercio attend des projets qu'il déploie :
+  #   branche par défaut → latest ; autre branche → <branche>-latest ; tag Git vX.Y → vX.Y.
+  image:
+    runs-on: ubuntu-latest
+    needs: check
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      # Image nommée d'après le dépôt : ghcr.io/sitpirajendran/vercio (public : latest et versions)
+      # ou ghcr.io/sitpirajendran/vercio-private (développement).
+      - name: Tags de l'image
+        id: tags
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ "$REF_TYPE" = tag ]; then
+            if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+              echo "Tag $REF_NAME ignoré : format attendu vX.Y ou vX.Y.Z" >&2
+              exit 1
+            fi
+            tag="$REF_NAME"
+            version="${REF_NAME#v}"
+          elif [ "$REF_NAME" = main ] || [ "$REF_NAME" = "$DEFAULT_BRANCH" ]; then
+            tag=latest
+            version="${SHA:0:7}"
+          else
+            # Même règle que latestTagForBranch (packages/shared/src/naming.ts).
+            tag="$(printf '%s' "$REF_NAME" | sed -E 's/[^A-Za-z0-9_.-]+/-/g')-latest"
+            version="${tag%-latest}-${SHA:0:7}"
+          fi
+          echo "tags=$IMAGE:$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Image : $IMAGE:$tag (version $version)"
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          # Serveurs x86 et ARM (dont les Mac Apple Silicon).
+          platforms: linux/amd64,linux/arm64
+          # Les pull requests construisent l'image sans la publier.
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          build-args: VERCIO_VERSION=${{ steps.tags.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

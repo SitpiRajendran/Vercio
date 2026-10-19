@@ -1,0 +1,50 @@
+# Installation de Vercio : voir install.sh, ou copier .env.example en .env et le compléter.
+services:
+  vercio:
+    image: ghcr.io/sitpirajendran/vercio:${VERCIO_TAG:-latest}
+    restart: unless-stopped
+    # Exposé uniquement en local : le reverse proxy amont publie Vercio.
+    ports:
+      - '127.0.0.1:${VERCIO_PORT:-9000}:9000'
+    environment:
+      DATABASE_URL: postgres://vercio:${DB_PASSWORD:?}@db:5432/vercio
+      VERCIO_SECRET_KEY: ${VERCIO_SECRET_KEY:?}
+      PUBLIC_URL: ${PUBLIC_URL:?}
+      VERCIO_SETUP_CODE: ${VERCIO_SETUP_CODE:-}
+      VERCIO_ADMIN_USERNAME: ${VERCIO_ADMIN_USERNAME:-admin}
+      VERCIO_ADMIN_PASSWORD: ${VERCIO_ADMIN_PASSWORD:-}
+      VERCIO_LOCAL_AUTH: ${VERCIO_LOCAL_AUTH:-true}
+      # Nombre de reverse proxys devant Vercio (adresse réelle des webhooks et de l'audit).
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      # Fuseau horaire des sauvegardes planifiées (« chaque jour à 03:00 »).
+      TZ: ${TZ:-Europe/Paris}
+      # SSO OpenID Connect (Keycloak…) : laisser vide pour ne pas l'activer.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-Keycloak}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/vercio:/var/lib/vercio
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Base de données propre à Vercio : elle n'est pas gérée par Vercio lui-même.
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vercio
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+      POSTGRES_DB: vercio
+    volumes:
+      - vercio-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vercio']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  vercio-db:

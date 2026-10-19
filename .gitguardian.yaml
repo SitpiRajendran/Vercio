@@ -1,0 +1,10 @@
+# Identifiants factices volontairement versionnés : bases jetables de la CI,
+# exemples de configuration et base de développement (localhost uniquement).
+# Aucun secret réel ne doit être ajouté dans ces chemins.
+version: 2
+secret:
+  ignored_paths:
+    - .github/workflows/ci.yml
+    - '**/.env.example'
+    - docker-compose.dev.yml
+    - apps/server/test/**

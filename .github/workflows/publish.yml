@@ -1,0 +1,126 @@
+name: Publish
+
+# Dépôt public : scripts/release.sh pousse la version sur une branche release/vX.Y.Z. Ce workflow
+# recrée le commit « 🔖 Release vX.Y.Z » par l'API GitHub, qui le signe (Verified), le place sur
+# main, construit les images latest et vX.Y.Z, pose le tag, crée la release et supprime la branche.
+on:
+  push:
+    branches: ['release/**']
+
+concurrency: publish
+
+jobs:
+  commit:
+    if: github.repository == 'SitpiRajendran/Vercio'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.commit.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Commit signé sur main
+        id: commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          subject="$(git log -1 --format=%s)"
+          version="$(printf '%s' "$subject" | sed -nE 's/^🔖 Release v([0-9]+\.[0-9]+\.[0-9]+)$/\1/p')"
+          [ -n "$version" ] || { echo "Message attendu : « 🔖 Release vX.Y.Z », reçu : $subject" >&2; exit 1; }
+          if gh api "$repo/git/ref/tags/v$version" >/dev/null 2>&1; then
+            echo "v$version existe déjà" >&2
+            exit 1
+          fi
+
+          # Parent : le main actuel s'il est signé ; sinon nouveau départ, pour un historique
+          # entièrement vérifié.
+          parents='[]'
+          head="$(gh api "$repo/git/ref/heads/main" --jq .object.sha 2>/dev/null || true)"
+          if [ -n "$head" ] && [ "$(gh api "$repo/commits/$head" --jq .commit.verification.verified)" = true ]; then
+            parents="[\"$head\"]"
+          fi
+
+          # Même arbre que la branche poussée ; ni auteur ni signature fournis : GitHub signe.
+          sha="$(jq -n \
+            --arg message "$(git log -1 --format=%B)" \
+            --arg tree "$(git rev-parse 'HEAD^{tree}')" \
+            --argjson parents "$parents" \
+            '{message: $message, tree: $tree, parents: $parents}' \
+            | gh api "$repo/git/commits" --input - --jq .sha)"
+          if [ -n "$head" ]; then
+            gh api -X PATCH "$repo/git/refs/heads/main" -f sha="$sha" -F force=true >/dev/null
+          else
+            gh api "$repo/git/refs" -f ref=refs/heads/main -f sha="$sha" >/dev/null
+          fi
+          gh api -X DELETE "$repo/git/refs/heads/$BRANCH"
+
+          verified="$(gh api "$repo/commits/$sha" --jq .commit.verification.verified)"
+          echo "Commit $sha (Verified : $verified)"
+          [ "$verified" = true ] || { echo "Le commit n'est pas signé par GitHub" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.commit.outputs.sha }}
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Nom de l'image
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:v${{ needs.commit.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.commit.outputs.sha }}
+            org.opencontainers.image.version=${{ needs.commit.outputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          build-args: VERCIO_VERSION=${{ needs.commit.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: [commit, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.commit.outputs.sha }}
+      - name: Tag et release GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.commit.outputs.version }}
+          SHA: ${{ needs.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "$tag" --target "$SHA" --title "$tag" --notes-file notes.md

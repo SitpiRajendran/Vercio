@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Scripts d'installation autorisés (true) ou refusés (false).
+allowBuilds:
+  '@tailwindcss/oxide': true
+  esbuild: true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

@@ -1,0 +1,1 @@
+ALTER TABLE "backups" ALTER COLUMN "environment_id" DROP NOT NULL;
