@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, normalize } from 'node:path'
 import type { CommandRunner } from './command.js'
 import { parse, stringify } from 'yaml'
 import { RELAY_IMAGE } from './zero-downtime.js'
+import { COMPOSE_YAML } from '../compose/yaml.js'
 
 export interface OverrideInput {
   projectSlug: string
@@ -190,7 +191,7 @@ export function maskSecrets(line: string, secrets: string[]): string {
 export function envFilePaths(compose: string): string[] {
   let document: unknown
   try {
-    document = parse(compose, { maxAliasCount: 100 })
+    document = parse(compose, COMPOSE_YAML)
   } catch {
     return []
   }

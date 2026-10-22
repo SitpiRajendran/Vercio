@@ -1,3 +1,4 @@
+import { hostname } from 'node:os'
 import { PassThrough, type Duplex, type Readable } from 'node:stream'
 import Docker from 'dockerode'
 import type {
@@ -14,6 +15,7 @@ import type {
   ComposeContainer,
   ContainerDetails,
   ContainerState,
+  DetachedRun,
   DockerEvent,
   EventOptions,
   ExecOptions,
@@ -22,6 +24,7 @@ import type {
   LogLine,
   NetworkState,
   LogOptions,
+  SelfContainer,
   StatsOptions,
 } from './host-driver.js'
 
@@ -516,6 +519,85 @@ export class LocalSocketDriver implements HostDriver {
       }),
     )
     return result
+  }
+
+  async connectNetwork(name: string, containers: { id: string; aliases: string[] }[]) {
+    try {
+      await this.#docker.getNetwork(name).inspect()
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode !== 404) throw error
+      try {
+        // Mêmes labels que le réseau créé au déploiement.
+        await this.#docker.createNetwork({
+          Name: name,
+          Driver: 'bridge',
+          Labels: { 'vercio.managed': 'true', 'vercio.shared-network': name },
+        })
+      } catch (created) {
+        // Créé entre-temps par un déploiement.
+        if ((created as { statusCode?: number }).statusCode !== 409) throw created
+      }
+    }
+    const network = this.#docker.getNetwork(name)
+    for (const container of containers) {
+      try {
+        await network.connect({
+          Container: container.id,
+          EndpointConfig: container.aliases.length ? { Aliases: container.aliases } : {},
+        })
+      } catch (error) {
+        // Déjà branché (403 ou 409 selon la version de Docker).
+        const status = (error as { statusCode?: number }).statusCode
+        if (status !== 403 && status !== 409) throw error
+      }
+    }
+  }
+
+  async selfContainer(): Promise<SelfContainer | null> {
+    try {
+      const info = await this.#docker.getContainer(hostname()).inspect()
+      return {
+        id: info.Id,
+        image: info.Config.Image,
+        labels: info.Config.Labels ?? {},
+        mounts: (info.Mounts ?? []).map((mount) => ({
+          source: mount.Source,
+          destination: mount.Destination,
+        })),
+      }
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode === 404) return null
+      throw error
+    }
+  }
+
+  async runDetached(options: DetachedRun): Promise<string> {
+    try {
+      await this.#docker.getImage(options.image).inspect()
+    } catch {
+      await new Promise<void>((resolve, reject) => {
+        this.#docker.pull(options.image, (error: Error | null, stream: NodeJS.ReadableStream) => {
+          if (error) return reject(error)
+          this.#docker.modem.followProgress(stream, (failure: Error | null) =>
+            failure ? reject(failure) : resolve(),
+          )
+        })
+      })
+    }
+    const container = await this.#docker.createContainer({
+      Image: options.image,
+      Cmd: options.command,
+      Env: Object.entries(options.env).map(([key, value]) => `${key}=${value}`),
+      Labels: options.labels,
+      HostConfig: {
+        Binds: options.binds,
+        AutoRemove: true,
+        // Le conteneur ne parle qu'au démon Docker (socket) : pas besoin de réseau.
+        NetworkMode: 'none',
+      },
+    })
+    await container.start()
+    return container.id
   }
 
   async removeNetwork(name: string): Promise<'removed' | 'missing' | 'in_use'> {

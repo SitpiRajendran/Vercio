@@ -11,6 +11,7 @@ import {
   type DeploymentEvent,
   type DeploymentLogLine,
   type DeploymentSummary,
+  type PublishedPortRule,
 } from '@vercio/shared'
 import { analyzeCompose } from '../compose/analyze.js'
 import type { Database } from '../db/client.js'
@@ -37,6 +38,8 @@ import { missingImageMessage } from '../providers/registry-diagnostics.js'
 import { registryClientFor, resolveRegistryCredentials } from '../providers/registry-access.js'
 import type { CommandRunner } from './command.js'
 import { composeFailure, describeComposeFailure } from './diagnostics.js'
+import type { VersionService } from '../versions/service.js'
+import { addPublishedPorts, pageRelays, withPage } from './published-ports.js'
 import {
   formatPortSpec,
   planZeroDowntime,
@@ -66,6 +69,8 @@ export interface EngineOptions {
   /** Historique conservé par environnement. */
   keepDeployments?: number
   notifications?: NotificationService
+  /** Versions de la CI : nom (commit ou tag) du dernier build déployé. */
+  versions?: VersionService
   /** Attente entre deux vérifications (remplaçable dans les tests). */
   sleep?: (ms: number) => Promise<void>
 }
@@ -344,6 +349,7 @@ export class DeploymentEngine {
       let compose: string
       let images: Record<string, string>
       let versions: DeploymentSummary['versions']
+      const rules = (environment.publishedPorts as PublishedPortRule[]) ?? []
       if (deployment.rollbackOfId) {
         const [target] = await this.db
           .select()
@@ -357,6 +363,23 @@ export class DeploymentEngine {
         versions = target.versions as DeploymentSummary['versions']
       } else {
         compose = await this.composeContent(context, log)
+        // Ports ouverts depuis Vercio ; un retour arrière reprend le fichier tel quel.
+        // Les ports avec page d'attente passent par un relais (plus bas), pas par le service.
+        const ports = addPublishedPorts(
+          compose,
+          rules.filter((rule) => !withPage(rule)),
+        )
+        compose = ports.compose
+        for (const { rule, reason } of ports.skipped) {
+          await log(`Port ${rule.published} vers ${rule.service} ignoré : ${reason}`, 'stderr')
+        }
+        for (const rule of rules) {
+          if (!ports.skipped.some((item) => item.rule === rule)) {
+            await log(
+              `Port ${rule.published}${rule.protocol === 'udp' ? '/udp' : ''} ouvert vers ${rule.service}:${rule.target}${withPage(rule) ? ' (page d’attente si le service ne répond pas)' : ''}`,
+            )
+          }
+        }
         ;({ images, versions } = await this.resolveImages(context, log))
       }
 
@@ -380,6 +403,9 @@ export class DeploymentEngine {
           'stderr',
         )
       }
+      // Ports avec page d'attente : tenus par un relais, même pendant un redémarrage du service.
+      const pages = pageRelays(compose, rules, zero)
+      const relays = [...zero.relays, ...pages]
       // Variables qu'aucune ligne du fichier ne transmet : un service seul les reçoit toutes ;
       // dans un projet Compose, c'est au fichier de dire quel service reçoit quoi.
       const unused = analysis.envFile
@@ -409,7 +435,7 @@ export class DeploymentEngine {
         explicitNetworks: analysis.services
           .filter((service) => service.networks !== null)
           .map((service) => service.name),
-        relays: zero.relays.map((relay) => ({
+        relays: relays.map((relay) => ({
           name: relay.name,
           service: relay.service,
           ports: relay.ports.map(formatPortSpec),
@@ -431,8 +457,8 @@ export class DeploymentEngine {
       await mkdir(dockerConfig, { recursive: true, mode: 0o700 })
       await writeFresh(insideDir(workDir, 'compose.yml'), zero.compose, 0o644)
       await writeFresh(insideDir(workDir, 'compose.vercio.yml'), override, 0o644)
-      if (zero.relays.length) await mkdir(join(workDir, '.vercio'), { recursive: true })
-      for (const relay of zero.relays) {
+      if (relays.length) await mkdir(join(workDir, '.vercio'), { recursive: true })
+      for (const relay of relays) {
         await writeFresh(
           insideDir(workDir, relayConfigPath(relay.name)),
           renderRelayConfig(relay),
@@ -475,7 +501,7 @@ export class DeploymentEngine {
       // Le relais (image nginx publique) n'est téléchargé que s'il manque : pas d'appel à
       // Docker Hub à chaque déploiement (limite de débit).
       await compose$(
-        zero.relays.length
+        relays.length
           ? ['pull', '--quiet', ...analysis.services.map((service) => service.name)]
           : ['pull', '--quiet'],
         'Téléchargement des images',
@@ -516,7 +542,7 @@ export class DeploymentEngine {
           }
           const others = [
             ...analysis.services.map((service) => service.name),
-            ...zero.relays.map((relay) => relay.name),
+            ...relays.map((relay) => relay.name),
           ].filter((service) => !rolling.some((item) => item.service === service))
           if (others.length) {
             await compose$(
@@ -1243,6 +1269,23 @@ export class DeploymentEngine {
         images[service.serviceName] =
           `${registryHost(registry.url)}/${service.imageRepository}@${info.digest}`
         await log(`  ${service.serviceName} → ${images[service.serviceName]}`)
+      }
+      // Dernier build (tag mobile `prod`, `latest`…) : le commit ou le tag de version qui a
+      // produit exactement ces images, pour l'historique.
+      if (envSource.ref === 'latest' && forSource.length && this.options.versions) {
+        try {
+          const choices = await this.options.versions.choices(source.id, envSource.branch)
+          const latest = choices?.latest
+          const same =
+            latest?.version &&
+            latest.images.every((image) => images[image.serviceName]?.endsWith(`@${image.digest}`))
+          if (same) {
+            versions[source.id]!.version = latest.version!.name
+            await log(`  = ${latest.version!.name} (${latest.version!.commit.shortSha})`)
+          }
+        } catch {
+          // Pas de nom de version : l'historique affiche le tag.
+        }
       }
     }
     return { images, versions }

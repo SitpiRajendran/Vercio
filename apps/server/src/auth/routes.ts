@@ -1,22 +1,26 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
-import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import QRCode from 'qrcode'
 import {
   changePasswordSchema,
   firstRunSchema,
   initialPasswordSchema,
   localLoginSchema,
+  MAX_TOTP_DEVICES,
   totpCodeSchema,
+  totpDeviceAddSchema,
+  totpDeviceRemoveSchema,
   type AuthConfig,
   type LocalLoginResult,
   type LogoutResult,
   type SsoError,
+  type TotpDeviceView,
   type TotpSetup,
   type TotpVerifyResult,
 } from '@vercio/shared'
 import type { Database } from '../db/client.js'
-import { sessions as sessionsTable, users } from '../db/schema.js'
+import { sessions as sessionsTable, totpDevices, users } from '../db/schema.js'
 import { audit } from '../lib/audit.js'
 import { hashToken, randomToken, type SecretBox } from '../lib/crypto.js'
 import { hashPassword, verifyPassword } from '../lib/password.js'
@@ -47,6 +51,9 @@ interface MfaTicket {
   /** Secret en cours d'enrôlement (stage `setup`), confirmé par le premier code valide. */
   pendingSecret?: string
 }
+
+/** Nom donné à la première application, enrôlée à la connexion. */
+const FIRST_DEVICE_NAME = 'Application d’authentification'
 
 /** Compare deux chaînes en temps constant. */
 function safeEqual(a: string, b: string): boolean {
@@ -90,6 +97,13 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
   // `__Secure-` en HTTPS : le navigateur refuse qu'un domaine voisin pose ces cookies.
   const prefix = secure ? '__Secure-' : ''
   const mfaCookie = new SealedCookie<MfaTicket>(`${prefix}vercio_mfa`, box, 5 * 60, secure)
+  // Ajout d'une application par un utilisateur connecté : secret en attente du premier code.
+  const deviceCookie = new SealedCookie<{ userId: string; secret: string }>(
+    `${prefix}vercio_totp_device`,
+    box,
+    10 * 60,
+    secure,
+  )
   const oidcCookie = new SealedCookie<PendingLogin>(`${prefix}vercio_oidc`, box, 10 * 60, secure)
   // Haché factice : garde un temps de réponse constant quand l'utilisateur n'existe pas.
   const dummyHash = hashPassword(randomToken())
@@ -138,6 +152,57 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     oidcEnabled: oidc !== null,
     oidcProviderName: oidc ? oidcProviderName : null,
   }))
+
+  async function deviceCount(userId: string, executor: Pick<Database, 'select'> = db) {
+    const [row] = await executor
+      .select({ value: sql<number>`count(*)::int` })
+      .from(totpDevices)
+      .where(eq(totpDevices.userId, userId))
+    return row?.value ?? 0
+  }
+
+  /**
+   * Code d'une des applications du compte. Mise à jour conditionnelle du dernier pas : deux
+   * requêtes simultanées avec le même code (relais de phishing) n'en valident qu'une.
+   * `null` : aucun code valide ; `false` : code valide mais déjà utilisé.
+   */
+  async function checkDeviceCode(userId: string, code: string): Promise<boolean | null> {
+    const devices = await db.select().from(totpDevices).where(eq(totpDevices.userId, userId))
+    for (const device of devices) {
+      const step = verifyTotp(box.decrypt(device.secretEnc), code, {
+        lastUsedStep: device.lastStep,
+      })
+      if (step === null) continue
+      const [accepted] = await db
+        .update(totpDevices)
+        .set({ lastStep: step, lastUsedAt: new Date() })
+        .where(
+          and(
+            eq(totpDevices.id, device.id),
+            or(isNull(totpDevices.lastStep), lt(totpDevices.lastStep, step)),
+          ),
+        )
+        .returning({ id: totpDevices.id })
+      return Boolean(accepted)
+    }
+    return null
+  }
+
+  /** Première application, à la connexion : une seule, même si deux codes arrivent ensemble. */
+  async function enrollFirstDevice(userId: string, secretEnc: string, step: number) {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select id from users where id = ${userId} for update`)
+      if ((await deviceCount(userId, tx)) > 0) return false
+      await tx.insert(totpDevices).values({
+        userId,
+        name: FIRST_DEVICE_NAME,
+        secretEnc,
+        lastStep: step,
+        lastUsedAt: new Date(),
+      })
+      return true
+    })
+  }
 
   // --- Premier lancement : création du premier administrateur -------------------------------
 
@@ -213,7 +278,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
       return reply.code(401).send({ error: 'Identifiants invalides' })
     }
 
-    const stage = user.totpSecretEnc ? 'verify' : 'setup'
+    const stage = (await deviceCount(user.id)) > 0 ? 'verify' : 'setup'
     mfaCookie.set(reply, { userId: user.id, stage })
     const result: LocalLoginResult = { next: stage === 'verify' ? 'totp' : 'totp_setup' }
     return result
@@ -255,16 +320,20 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
         .send({ error: 'Trop de codes invalides : réessayez dans quelques minutes' })
     }
 
-    const secret =
-      ticket.stage === 'setup'
-        ? ticket.pendingSecret
-        : user.totpSecretEnc
-          ? box.decrypt(user.totpSecretEnc)
-          : undefined
-    if (!secret) return reply.code(400).send({ error: 'Enrôlement TOTP non démarré' })
-
-    const step = verifyTotp(secret, parsed.data.code, { lastUsedStep: user.totpLastStep })
-    if (step === null) {
+    let valid: boolean | null
+    if (ticket.stage === 'setup') {
+      if (!ticket.pendingSecret) {
+        return reply.code(400).send({ error: 'Enrôlement TOTP non démarré' })
+      }
+      const step = verifyTotp(ticket.pendingSecret, parsed.data.code)
+      valid =
+        step === null
+          ? null
+          : await enrollFirstDevice(user.id, box.encrypt(ticket.pendingSecret), step)
+    } else {
+      valid = await checkDeviceCode(user.id, parsed.data.code)
+    }
+    if (valid === null) {
       totpFailed(user.id)
       await audit(db, {
         userId: user.id,
@@ -275,20 +344,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
       })
       return reply.code(401).send({ error: 'Code invalide' })
     }
-
-    // Mise à jour conditionnelle : deux requêtes simultanées avec le même code (relais de
-    // phishing) ne peuvent pas ouvrir deux sessions.
-    const [accepted] = await db
-      .update(users)
-      .set({
-        totpLastStep: step,
-        ...(ticket.stage === 'setup' ? { totpSecretEnc: box.encrypt(secret) } : {}),
-      })
-      .where(
-        and(eq(users.id, user.id), or(isNull(users.totpLastStep), lt(users.totpLastStep, step))),
-      )
-      .returning({ id: users.id })
-    if (!accepted) return reply.code(401).send({ error: 'Code invalide' })
+    if (!valid) return reply.code(401).send({ error: 'Code invalide' })
     totpFailures.delete(user.id)
     if (ticket.stage === 'setup') {
       await audit(db, {
@@ -399,6 +455,189 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
       userId: user.id,
       username: user.username,
       action: 'auth.password.change',
+      ip: request.ip,
+      success: true,
+    })
+    return reply.code(204).send()
+  })
+
+  // --- Applications d'authentification de l'utilisateur connecté --------------------------
+
+  /** Compte local connecté et mot de passe actuel vérifié ; sinon la réponse d'erreur est envoyée. */
+  async function confirmLocalUser(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    currentPassword: string,
+    action: string,
+  ) {
+    const [user] = await db.select().from(users).where(eq(users.id, request.user!.id)).limit(1)
+    if (!user?.passwordHash || !(await verifyPassword(user.passwordHash, currentPassword))) {
+      await audit(db, {
+        userId: request.user!.id,
+        username: request.user!.username,
+        action,
+        ip: request.ip,
+        success: false,
+      })
+      reply.code(400).send({ error: 'Mot de passe actuel incorrect', field: 'currentPassword' })
+      return null
+    }
+    return user
+  }
+
+  /** Utilisateur connecté avec un compte local ; sinon la réponse d'erreur est envoyée. */
+  function requireLocalUser(request: FastifyRequest, reply: FastifyReply): boolean {
+    if (!request.user) {
+      reply.code(401).send({ error: 'Authentification requise' })
+      return false
+    }
+    if (request.user.provider !== 'local') {
+      reply
+        .code(400)
+        .send({ error: 'La double authentification d’un compte SSO se gère chez le fournisseur' })
+      return false
+    }
+    return true
+  }
+
+  app.get('/totp/devices', async (request, reply) => {
+    if (!requireLocalUser(request, reply)) return
+    const rows = await db
+      .select()
+      .from(totpDevices)
+      .where(eq(totpDevices.userId, request.user!.id))
+      .orderBy(asc(totpDevices.createdAt))
+    return rows.map((row): TotpDeviceView => ({
+      id: row.id,
+      name: row.name,
+      createdAt: row.createdAt.toISOString(),
+      lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+    }))
+  })
+
+  /** Nouveau secret, gardé dans un cookie scellé jusqu'à la confirmation par un premier code. */
+  app.post('/totp/devices/setup', async (request, reply) => {
+    if (!requireLocalUser(request, reply)) return
+    if ((await deviceCount(request.user!.id)) >= MAX_TOTP_DEVICES) {
+      return reply
+        .code(400)
+        .send({ error: `${MAX_TOTP_DEVICES} applications au plus : supprimez-en une d’abord` })
+    }
+    const secret = generateTotpSecret()
+    deviceCookie.set(reply, { userId: request.user!.id, secret })
+    const uri = totpUri(secret, request.user!.username)
+    const result: TotpSetup = {
+      secret,
+      uri,
+      qrSvg: await QRCode.toString(uri, { type: 'svg', margin: 1 }),
+    }
+    return result
+  })
+
+  app.post('/totp/devices', { config: LOGIN_RATE_LIMIT }, async (request, reply) => {
+    if (!requireLocalUser(request, reply)) return
+    const parsed = totpDeviceAddSchema.safeParse(request.body)
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]
+      return reply.code(400).send({ error: issue?.message, field: issue?.path.join('.') })
+    }
+    const pending = deviceCookie.get(request)
+    if (!pending || pending.userId !== request.user!.id) {
+      return reply.code(400).send({ error: 'QR code expiré : recommencez l’ajout' })
+    }
+    const user = await confirmLocalUser(
+      request,
+      reply,
+      parsed.data.currentPassword,
+      'auth.totp.add',
+    )
+    if (!user) return
+    if (totpLocked(user.id)) {
+      return reply
+        .code(429)
+        .send({ error: 'Trop de codes invalides : réessayez dans quelques minutes' })
+    }
+    const step = verifyTotp(pending.secret, parsed.data.code)
+    if (step === null) {
+      totpFailed(user.id)
+      return reply.code(400).send({ error: 'Code invalide', field: 'code' })
+    }
+    const added = await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from users where id = ${user.id} for update`)
+      if ((await deviceCount(user.id, tx)) >= MAX_TOTP_DEVICES) return null
+      const [row] = await tx
+        .insert(totpDevices)
+        .values({
+          userId: user.id,
+          name: parsed.data.name,
+          secretEnc: box.encrypt(pending.secret),
+          lastStep: step,
+          lastUsedAt: new Date(),
+        })
+        .returning()
+      return row ?? null
+    })
+    if (!added) {
+      return reply.code(400).send({ error: `${MAX_TOTP_DEVICES} applications au plus` })
+    }
+    deviceCookie.clear(reply)
+    totpFailures.delete(user.id)
+    await audit(db, {
+      userId: user.id,
+      username: user.username,
+      action: 'auth.totp.add',
+      target: added.name,
+      ip: request.ip,
+      success: true,
+    })
+    const result: TotpDeviceView = {
+      id: added.id,
+      name: added.name,
+      createdAt: added.createdAt.toISOString(),
+      lastUsedAt: added.lastUsedAt?.toISOString() ?? null,
+    }
+    return reply.code(201).send(result)
+  })
+
+  /** Suppression d'une application : il en reste toujours une. */
+  app.delete('/totp/devices/:id', { config: LOGIN_RATE_LIMIT }, async (request, reply) => {
+    if (!requireLocalUser(request, reply)) return
+    const { id } = request.params as { id: string }
+    const parsed = totpDeviceRemoveSchema.safeParse(request.body)
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]
+      return reply.code(400).send({ error: issue?.message, field: issue?.path.join('.') })
+    }
+    const user = await confirmLocalUser(
+      request,
+      reply,
+      parsed.data.currentPassword,
+      'auth.totp.remove',
+    )
+    if (!user) return
+    const outcome = await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from users where id = ${user.id} for update`)
+      const devices = await tx
+        .select({ id: totpDevices.id, name: totpDevices.name })
+        .from(totpDevices)
+        .where(eq(totpDevices.userId, user.id))
+      const device = devices.find((item) => item.id === id)
+      if (!device) return 'missing' as const
+      if (devices.length <= 1) return 'last' as const
+      await tx.delete(totpDevices).where(eq(totpDevices.id, device.id))
+      return device
+    })
+    if (outcome === 'missing') return reply.code(404).send({ error: 'Application introuvable' })
+    if (outcome === 'last') {
+      return reply.code(400).send({
+        error: 'Gardez au moins une application : ajoutez-en une autre avant de supprimer celle-ci',
+      })
+    }
+    await audit(db, {
+      userId: user.id,
+      username: user.username,
+      action: 'auth.totp.remove',
+      target: outcome.name,
       ip: request.ip,
       success: true,
     })

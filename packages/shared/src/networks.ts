@@ -60,6 +60,28 @@ export const environmentNetworksSchema = z.object({
 })
 export type EnvironmentNetworksInput = z.input<typeof environmentNetworksSchema>
 
+/**
+ * Liaison d'un environnement à un service d'un autre projet (« Connecter à un projet ») : le
+ * réseau partagé est créé au besoin, l'abonnement ajouté, et les conteneurs en marche branchés.
+ */
+export const environmentLinkSchema = z.object({
+  targetEnvironmentId: z.uuid({ message: 'Projet requis' }),
+  service: z.string().trim().min(1, { message: 'Service requis' }).max(100),
+  /** Nom sous lequel le service est joint ; ignoré si ce service est déjà partagé. */
+  alias: sharedNetworkAliasSchema,
+  /** Services de cet environnement reliés ; null : tous. */
+  services: z.array(z.string().min(1).max(100)).min(1).nullable(),
+})
+export type EnvironmentLinkInput = z.input<typeof environmentLinkSchema>
+
+export interface EnvironmentLinkResult {
+  network: SharedNetworkView
+  /** Conteneurs en marche branchés tout de suite ; sinon, au prochain déploiement. */
+  applied: boolean
+  /** Raison quand le branchement immédiat n'a pas pu se faire. */
+  detail: string | null
+}
+
 export interface EnvironmentRef {
   projectId: string
   projectSlug: string

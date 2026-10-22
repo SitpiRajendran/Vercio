@@ -19,6 +19,9 @@ import type { HostDriver } from './docker/host-driver.js'
 import { StatsSampler } from './docker/stats.js'
 import { overviewRoutes } from './routes/overview.js'
 import { BackupService } from './backups/service.js'
+import type { VercioRelease } from '@vercio/shared'
+import { UpdateService } from './updates/service.js'
+import { VERCIO_VERSION } from './version.js'
 import { backupRoutes } from './routes/backups.js'
 import { SecretBox } from './lib/crypto.js'
 import { ContainerWatcher } from './notifications/containers.js'
@@ -52,6 +55,8 @@ export interface AppDeps {
   watchers?: boolean
   /** Après restauration de la base de Vercio (tests : sans arrêter le processus). */
   restart?: () => void
+  /** Tests : version en service et dernière release publiée. */
+  update?: { version?: string; fetchRelease?: () => Promise<VercioRelease> }
 }
 
 declare module 'fastify' {
@@ -73,6 +78,7 @@ export async function buildApp({
   watchers = false,
   // Arrêt propre ; Docker relance le conteneur (restart: unless-stopped).
   restart = () => setTimeout(() => process.kill(process.pid, 'SIGTERM'), 1000).unref(),
+  update = {},
 }: AppDeps) {
   const publicUrl = new URL(config.PUBLIC_URL)
   const app = Fastify({
@@ -100,6 +106,7 @@ export async function buildApp({
     runner,
     log: app.log,
     notifications,
+    versions,
   })
   await engine.recover()
   notifications.start()
@@ -137,6 +144,19 @@ export async function buildApp({
     backupService.stop()
     await backupService.idle()
   })
+  const updates = new UpdateService({
+    db,
+    host,
+    backups: backupService,
+    dataDir: config.VERCIO_DATA_DIR,
+    version: update.version ?? VERCIO_VERSION,
+    enabled: config.VERCIO_UPDATE_CHECK,
+    log: app.log,
+    fetchRelease: update.fetchRelease,
+  })
+  await updates.recover()
+  if (watchers) updates.start()
+  app.addHook('onClose', async () => updates.stop())
   app.decorate('backups', backupService)
   app.decorate('notifications', notifications)
   app.decorate('disk', disk)
@@ -181,7 +201,20 @@ export async function buildApp({
 
   await app.register(
     async (api) => {
-      await api.register(systemRoutes, { db, host, disk })
+      await api.register(systemRoutes, {
+        db,
+        host,
+        disk,
+        updates,
+        settings: {
+          publicUrl: config.PUBLIC_URL,
+          dataDir: config.VERCIO_DATA_DIR,
+          databaseUrl: config.DATABASE_URL,
+          localAuth: config.VERCIO_LOCAL_AUTH,
+          sso: Boolean(config.OIDC_ISSUER),
+          updateCheck: config.VERCIO_UPDATE_CHECK,
+        },
+      })
       await api.register(authRoutes, {
         prefix: '/auth',
         db,
@@ -206,7 +239,7 @@ export async function buildApp({
       await api.register(eventRoutes, { db })
       await api.register(networkRoutes, { db, host })
       await api.register(overviewRoutes, { db, host, stats })
-      await api.register(backupRoutes, { db, box, backups: backupService })
+      await api.register(backupRoutes, { db, box, backups: backupService, host })
       await api.register(containerRoutes, {
         db,
         box,

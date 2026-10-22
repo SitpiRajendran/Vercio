@@ -88,6 +88,12 @@ export interface BackupDestinationView {
   hasCredentials: boolean
   /** Environnements qui l'utilisent. */
   plans: number
+  /**
+   * Dossier : emplacement réel sur le serveur (le conteneur de Vercio voit les dossiers montés
+   * sous un autre chemin) ; null s'il n'est pas monté, donc perdu à la recréation du conteneur.
+   * Absent pour S3, ou quand Docker ne permet pas de le savoir.
+   */
+  hostPath?: string | null
   createdAt: string
 }
 

@@ -88,7 +88,8 @@ export function BackupsTab({
         (item) => item.status === 'running' || item.lastRestore?.status === 'running',
       )
         ? 2000
-        : false,
+        : // Sauvegardes planifiées : apparaissent sans recharger la page.
+          60_000,
   })
   const run = useMutation({
     mutationFn: () => api.backups.run(project.id, envId),

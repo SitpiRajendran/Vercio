@@ -470,6 +470,8 @@ describe.skipIf(!TEST_DATABASE_URL)('Déploiements', () => {
     await db.update(appSources).set({ latestTagTemplate: null })
     expect(result.status).toBe('succeeded')
     expect(Object.values(result.versions)[0]).toMatchObject({ ref: 'latest', tag: 'v1.3' })
+    // Version de la CI dont les images sont exactement celles du tag mobile.
+    expect(Object.values(result.versions)[0]).toMatchObject({ version: 'v1.3' })
   })
 
   it('explique un port déjà pris et nomme le conteneur qui l’occupe', async () => {

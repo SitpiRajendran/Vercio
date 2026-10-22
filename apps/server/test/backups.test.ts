@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -536,23 +537,33 @@ describe.skipIf(!TEST_DATABASE_URL)('Sauvegardes', () => {
     expect((await restore(broken.id, 'vercio', 'deployer')).statusCode).toBe(403)
     expect((await restore(broken.id, 'oui')).statusCode).toBe(400)
     expect((await restore(broken.id)).statusCode).toBe(202)
-    let page = (await call('GET', url)).json()
+    const page = (await call('GET', url)).json()
     expect(page.restore).toMatchObject({ backupId: broken.id, status: 'failed' })
     expect(page.restore.error).toMatch(/import refusé, base inchangée.*table_absente/)
     expect(ctx.restarts.count).toBe(0)
 
     // Import réussi : la base reçoit la sauvegarde, l'historique est gardé, Vercio redémarre.
+    // Sauvegarde complète : la base est vidée avant l'import, la sauvegarde recrée tout.
+    const schema = readdirSync(join(import.meta.dirname, '../drizzle'))
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+      .map((name) => readFileSync(join(import.meta.dirname, '../drizzle', name), 'utf8'))
+      .join('\n')
+      .replaceAll('--> statement-breakpoint', '')
     const good = await backupOf(
-      "insert into audit_logs (action, success) values ('marqueur-restauration', true);",
+      `${schema}\ninsert into audit_logs (action, success) values ('marqueur-restauration', true);`,
     )
     const before = (await call('GET', url)).json().backups.length
     expect((await restore(good.id)).statusCode).toBe(202)
     expect(ctx.restarts.count).toBe(1)
-    page = (await call('GET', url)).json()
-    expect(page.restore).toMatchObject({ status: 'running' })
-    expect(page.restore.logs.join('\n')).toContain('sauvegarde de sécurité')
+    // Base remplacée : les sessions d'avant n'existent plus (reconnexion), on lit l'état direct.
+    expect(ctx.app.backups.vercioRestore).toMatchObject({ status: 'running' })
+    expect(ctx.app.backups.vercioRestore!.logs.join('\n')).toContain('sauvegarde de sécurité')
     // Une sauvegarde de sécurité de plus, et l'historique d'avant toujours là.
-    expect(page.backups).toHaveLength(before + 1)
+    const kept = await ctx.db.execute(
+      sql`select count(*)::int as n from backups where environment_id is null`,
+    )
+    expect((kept as unknown as { n: number }[])[0]!.n).toBe(before + 1)
     const audit = await ctx.db.execute(
       sql`select count(*)::int as n from audit_logs where action = 'marqueur-restauration'`,
     )

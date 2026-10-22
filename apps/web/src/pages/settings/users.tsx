@@ -481,7 +481,7 @@ const CONFIRM = {
   'reset-totp': {
     title: 'Réinitialiser la double authentification de',
     description:
-      'À sa prochaine connexion, l’utilisateur scannera un nouveau QR code (téléphone perdu ou changé). Ses sessions en cours sont fermées.',
+      'Toutes ses applications d’authentification sont retirées : à sa prochaine connexion, l’utilisateur scannera un nouveau QR code (téléphone perdu ou changé). Ses sessions en cours sont fermées.',
     button: 'Réinitialiser',
   },
   delete: {

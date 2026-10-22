@@ -8,7 +8,7 @@ import { PageHeader } from '@/components/layout/app-layout'
 import { DeploymentLog, useDeploymentStream } from '@/components/projects/deployment-log'
 import {
   DeploymentStatusBadge,
-  deployedTags,
+  deployedLabel,
   duration,
   isFinal,
   TRIGGER_LABELS,
@@ -113,7 +113,7 @@ function DeploymentView({
                 {TRIGGER_LABELS[summary.trigger]}
                 {summary.username ? ` par ${summary.username}` : ''}
               </Info>
-              <Info label="Version">{deployedTags(summary)}</Info>
+              <Info label="Version">{deployedLabel(summary)}</Info>
               {duration(summary) && <Info label="Durée">{duration(summary)}</Info>}
               {Object.keys(summary.images).length > 0 && (
                 <Info label="Images">

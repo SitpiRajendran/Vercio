@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CircleDashed,
@@ -9,11 +9,21 @@ import {
   Radio,
   RefreshCw,
   Tag,
+  Wand2,
 } from 'lucide-react'
-import type { CommitInfo, VersionChoices } from '@vercio/shared'
+import { toast } from 'sonner'
+import {
+  suggestTagConvention,
+  type CommitInfo,
+  type ProjectView,
+  type TagConvention,
+  type VersionChoices,
+} from '@vercio/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { saveTagConvention } from '@/components/projects/tag-convention-editor'
+import { useWorkbench } from '@/components/workbench/workbench'
 import { api } from '@/lib/api'
 import { formatDateTime, formatRelative } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -31,6 +41,7 @@ export function VersionPicker({
   value,
   onChange,
   currentRef,
+  project,
 }: {
   projectId: string
   sourceId: string
@@ -39,6 +50,8 @@ export function VersionPicker({
   onChange: (ref: string, kind: 'latest' | 'tag') => void
   /** Version actuellement configurée sur l'environnement (badge « actuelle »). */
   currentRef?: string
+  /** Projet : permet de corriger la convention de tags sur place. */
+  project?: ProjectView
 }) {
   const queryClient = useQueryClient()
   const queryKey = ['projects', projectId, 'versions', sourceId, branch]
@@ -88,6 +101,13 @@ export function VersionPicker({
   // « latest » désigne le canal de la branche, quel que soit son nom (latest, develop-latest…).
   const isLatest = (ref: string | undefined) => ref === LATEST || ref === data.latest.tag
   const known = isLatest(value) || data.tags.some((tag) => tag.name === value)
+  const suggestion = suggestTagConvention({
+    branch,
+    registryTags: data.registryTags ?? [],
+    latestAvailable: data.latest.available,
+    versionSource: data.versionSource,
+    hasVersions: data.tags.length > 0,
+  })
 
   return (
     <div className="space-y-2">
@@ -98,6 +118,15 @@ export function VersionPicker({
           Actualiser
         </Button>
       </div>
+
+      {suggestion && (
+        <ConventionFix
+          project={project}
+          sourceId={sourceId}
+          suggestion={suggestion}
+          missingTag={data.latest.available ? null : data.latest.tag}
+        />
+      )}
 
       <div
         role="radiogroup"
@@ -189,12 +218,24 @@ export function VersionPicker({
         ))}
       </div>
 
-      {data.warnings.map((warning) => (
-        <p key={warning} className="text-warning flex items-start gap-2 text-xs">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          {warning}
-        </p>
-      ))}
+      {/* Une correction est proposée plus haut : le détail reste accessible, replié. */}
+      {suggestion && data.warnings.length > 0 ? (
+        <details className="text-muted-foreground text-xs">
+          <summary className="hover:text-foreground cursor-pointer">Détails</summary>
+          <div className="mt-1 space-y-1">
+            {data.warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </div>
+        </details>
+      ) : (
+        data.warnings.map((warning) => (
+          <p key={warning} className="text-warning flex items-start gap-2 text-xs">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            {warning}
+          </p>
+        ))
+      )}
 
       {manual || (!known && value) ? (
         <ManualInput
@@ -209,6 +250,76 @@ export function VersionPicker({
         >
           Saisir un autre tag…
         </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * La CI ne pousse pas les tags attendus, mais le registry en contient d'autres qui conviennent :
+ * correction de la convention de tags du dépôt en un clic (administrateurs).
+ */
+function ConventionFix({
+  project,
+  sourceId,
+  suggestion,
+  missingTag,
+}: {
+  project?: ProjectView
+  sourceId: string
+  suggestion: NonNullable<ReturnType<typeof suggestTagConvention>>
+  missingTag: string | null
+}) {
+  const { isAdmin } = useWorkbench()
+  const queryClient = useQueryClient()
+  const patch: Partial<TagConvention> = {
+    ...(suggestion.latest ? { latestTagTemplate: suggestion.latest.template } : {}),
+    ...(suggestion.commits
+      ? { versionSource: 'commits', commitTagTemplate: suggestion.commits.template }
+      : {}),
+  }
+  const apply = useMutation({
+    mutationFn: () => saveTagConvention(project!, sourceId, patch),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData(['projects', updated.slug], updated)
+      await queryClient.invalidateQueries({ queryKey: ['projects', updated.id, 'versions'] })
+      toast.success('Convention de tags enregistrée')
+    },
+    onError: (failure) => toast.error(failure.message),
+  })
+
+  return (
+    <div className="border-warning/40 bg-warning/5 space-y-2 rounded-lg border p-3 text-sm">
+      <p className="flex items-start gap-2 font-medium">
+        <Wand2 className="text-warning mt-0.5 size-4 shrink-0" />
+        {missingTag
+          ? `Votre CI ne pousse pas le tag « ${missingTag} », mais d’autres tags conviennent :`
+          : 'Votre CI pousse des images par commit :'}
+      </p>
+      <ul className="text-muted-foreground list-disc space-y-0.5 pl-10 text-xs">
+        {suggestion.latest && (
+          <li>
+            dernier build : suivre <code className="text-foreground">{suggestion.latest.tag}</code>
+          </li>
+        )}
+        {suggestion.commits && (
+          <li>
+            versions proposées : les derniers commits (images{' '}
+            <code className="text-foreground">{suggestion.commits.example}</code>…)
+          </li>
+        )}
+      </ul>
+      {isAdmin && project ? (
+        <div className="pl-6">
+          <Button type="button" size="sm" onClick={() => apply.mutate()} disabled={apply.isPending}>
+            {apply.isPending && <Loader2 className="animate-spin" />}
+            Utiliser ces tags
+          </Button>
+        </div>
+      ) : (
+        <p className="text-muted-foreground pl-6 text-xs">
+          Demandez à un administrateur de régler la convention de tags (Paramètres du projet).
+        </p>
       )}
     </div>
   )

@@ -56,14 +56,14 @@ export function ProjectDetailPage() {
   const project = useQuery({
     queryKey: ['projects', slug],
     queryFn: () => api.projects.get(slug),
-    // Rafraîchit les statuts tant qu'un déploiement est en cours.
+    // Déploiement en cours : suivi rapproché ; sinon de quoi voir ceux lancés par webhook.
     refetchInterval: (query) =>
       query.state.data?.environments.some(
         (env) =>
           env.lastDeployment?.status === 'running' || env.lastDeployment?.status === 'queued',
       )
         ? 3000
-        : false,
+        : 30_000,
   })
 
   if (project.isPending) {

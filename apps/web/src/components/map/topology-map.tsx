@@ -35,7 +35,14 @@ const EDGE_STYLES: Record<Edge['kind'], string> = {
  * centre, pastilles = réseaux internes), réseaux partagés entre projets (à droite).
  * Survoler ou choisir un conteneur montre ce qu'il peut joindre.
  */
-export function TopologyMap({ topology }: { topology: Topology }) {
+export function TopologyMap({
+  topology,
+  sharedActions,
+}: {
+  topology: Topology
+  /** Sous la colonne des réseaux partagés : partager un service, rejoindre un réseau. */
+  sharedActions?: React.ReactNode
+}) {
   const workbench = useWorkbench()
   const wrapper = useRef<HTMLDivElement>(null)
   const [segments, setSegments] = useState<Segment[]>([])
@@ -335,6 +342,7 @@ export function TopologyMap({ topology }: { topology: Topology }) {
             hint="Un service d’un projet, joignable par les autres sous un nom"
           >
             {topology.shared.length === 0 && <Empty>Aucun réseau partagé.</Empty>}
+            {sharedActions}
             {topology.shared.map((network) => (
               <div
                 key={network.id}

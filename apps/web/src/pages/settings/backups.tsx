@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertTriangle,
   Cloud,
   HardDrive,
   KeyRound,
@@ -153,6 +154,22 @@ function DestinationCard({
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-3">
+        {destination.hostPath === null && (
+          <p className="text-destructive flex items-start gap-1.5 text-xs">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              Ce dossier est à l’intérieur du conteneur de Vercio, pas sur le serveur : les
+              sauvegardes seraient perdues à sa prochaine recréation (mise à jour). Choisissez un
+              dossier sous <code>/var/lib/vercio</code>, ou montez-en un dans docker-compose.yml.
+            </span>
+          </p>
+        )}
+        {destination.hostPath && (
+          <p className="text-muted-foreground text-xs">
+            Sur le serveur :{' '}
+            <span className="text-foreground font-mono">{destination.hostPath}</span>
+          </p>
+        )}
         <p className="text-muted-foreground text-xs">
           {BACKUP_DESTINATION_LABELS[destination.type]} ·{' '}
           {destination.plans > 0
@@ -318,7 +335,7 @@ function DestinationDialog({
               id="bd-path"
               label="Dossier"
               error={fieldError('path')}
-              hint="Dans le conteneur de Vercio : montez-y un disque ou un partage réseau (volume dans docker-compose.yml). /var/lib/vercio est déjà monté."
+              hint="Chemin vu par Vercio. /var/lib/vercio est sur le serveur au même chemin : /var/lib/vercio/sauvegardes, par exemple. Pour un autre disque ou un partage réseau, montez-le dans docker-compose.yml."
             >
               <Input
                 id="bd-path"

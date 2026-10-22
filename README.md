@@ -54,6 +54,28 @@ curl -fsSLO https://raw.githubusercontent.com/SitpiRajendran/Vercio/main/install
 sh install.sh
 ```
 
+<details>
+<summary>Without curl</summary>
+
+With wget, replace the two `curl` lines with:
+
+```sh
+wget https://raw.githubusercontent.com/SitpiRajendran/Vercio/main/docker-compose.yml
+wget https://raw.githubusercontent.com/SitpiRajendran/Vercio/main/install.sh
+```
+
+With neither, let Docker download them:
+
+```sh
+docker run --rm -v "$PWD:/w" -w /w alpine:3.20 wget \
+  https://raw.githubusercontent.com/SitpiRajendran/Vercio/main/docker-compose.yml \
+  https://raw.githubusercontent.com/SitpiRajendran/Vercio/main/install.sh
+```
+
+You can also copy [`docker-compose.yml`](docker-compose.yml) and [`.env.example`](.env.example) by hand, save the second one as `.env`, fill it in, then run `docker compose up -d`.
+
+</details>
+
 The script asks for the public address of Vercio, generates a `.env` file with random secrets and starts Vercio on `127.0.0.1:9000`. Then open the public address: the first page creates the administrator account, using the setup code printed by the script.
 
 Point your reverse proxy to `127.0.0.1:9000`. It must let WebSockets through (terminal) and must not buffer responses (live logs).
@@ -90,11 +112,15 @@ server {
 
 ### Updating Vercio
 
+When a new version is published, Vercio shows it at the bottom of the sidebar. An administrator can update from there in one click: Vercio backs up its database first (to the Vercio backup destination if one is set, otherwise to its data folder), restarts on the new version, and goes back to the previous one if the new one does not start. Your sites keep running during the update.
+
+To update by hand instead:
+
 ```sh
 docker compose pull && docker compose up -d
 ```
 
-Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.1.0` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
+Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.1` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
 
 ## Configuration
 
@@ -108,9 +134,14 @@ Everything is set in the `.env` file next to `docker-compose.yml`. After a chang
 | `VERCIO_SETUP_CODE`                                   | Code asked when creating the first administrator account              |
 | `TZ`                                                  | Time zone of scheduled backups (`Europe/Paris` by default)            |
 | `TRUST_PROXY`                                         | Number of reverse proxies in front of Vercio (`1` by default)         |
+| `VERCIO_ADMIN_USERNAME`, `VERCIO_ADMIN_PASSWORD`      | Create the first administrator at startup, without the setup page     |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | SSO login (optional, see below)                                       |
+| `OIDC_PROVIDER_NAME`                                  | Name shown on the SSO login button (`Keycloak` by default)            |
+| `OIDC_ROLES_CLAIMS`                                   | Where roles are read in the SSO token (see below)                     |
 | `VERCIO_LOCAL_AUTH`                                   | `false` to allow SSO only                                             |
 | `VERCIO_TAG`                                          | Image version to run (`latest` by default)                            |
+| `VERCIO_UPDATE_CHECK`                                 | `false` to stop checking GitHub for new versions                      |
+| `VERCIO_PORT`                                         | Local port Vercio listens on (`9000` by default)                      |
 
 ## Usage
 
@@ -142,7 +173,16 @@ Local accounts and SSO work together: the login page offers both.
 2. In the client's _Roles_ tab, create `vercio-admin`, `vercio-deployer` and `vercio-viewer`, and assign them to your users or groups. Without one of these roles, login is refused.
 3. Add `OIDC_ISSUER` (for example `https://keycloak.example.com/realms/my-realm`), `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` to `.env`, then run `docker compose up -d`.
 
-Roles are read again at each login. Vercio looks for them in the client roles, the realm roles and top-level groups (a `/vercio-admin` group grants the `vercio-admin` role; a subgroup such as `/team/vercio-admin` does not). `OIDC_ROLES_CLAIMS` changes where they are read from. If Keycloak uses a certificate from an internal authority, mount it in the container and set `NODE_EXTRA_CA_CERTS`.
+Roles are read again at each login. Vercio looks for them in the client roles, the realm roles and top-level groups (a `/vercio-admin` group grants the `vercio-admin` role; a subgroup such as `/team/vercio-admin` does not). `OIDC_ROLES_CLAIMS` changes where they are read from. If Keycloak uses a certificate from an internal authority, add it with a `docker-compose.override.yml` next to `docker-compose.yml`:
+
+```yaml
+services:
+  vercio:
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/vercio/ca.pem
+    volumes:
+      - ./ca.pem:/etc/vercio/ca.pem:ro
+```
 
 </details>
 
@@ -164,9 +204,12 @@ Download the Vercio backup (the file is already decrypted), then, with the same 
 
 ```sh
 docker compose stop vercio
-gunzip -c vercio-YYYY-MM-DD-vercio.sql.gz | docker compose exec -T db psql -U vercio vercio
+(echo 'DROP SCHEMA IF EXISTS drizzle CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;'; gunzip -c vercio-YYYY-MM-DD-vercio.sql.gz) \
+  | docker compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U vercio vercio
 docker compose start vercio
 ```
+
+The first line empties the database so that the backup is restored exactly, even if it was made by an older version; Vercio upgrades it when it starts. Everything happens in one transaction: if the import fails, the database is left as it was.
 
 </details>
 

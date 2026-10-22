@@ -160,6 +160,7 @@ export async function resolveVersions(
     latest,
     tags,
     warnings: [...warnings],
+    registryTags: [],
     checkedAt: new Date().toISOString(),
   }
 }

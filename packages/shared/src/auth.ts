@@ -92,6 +92,34 @@ export const totpSetupSchema = z.object({
 })
 export type TotpSetup = z.infer<typeof totpSetupSchema>
 
+/** Applications d'authentification par compte, au plus. */
+export const MAX_TOTP_DEVICES = 10
+
+/** Application d'authentification enregistrée sur le compte connecté. */
+export interface TotpDeviceView {
+  id: string
+  name: string
+  createdAt: string
+  lastUsedAt: string | null
+}
+
+/** Ajout d'une application : QR code obtenu par `POST /auth/totp/devices/setup`, puis ce formulaire. */
+export const totpDeviceAddSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, { message: 'Nom requis' })
+    .max(64, { message: '64 caractères maximum' }),
+  code: totpCodeSchema.shape.code,
+  currentPassword: z.string().min(1, { message: 'Mot de passe requis' }).max(256),
+})
+export type TotpDeviceAdd = z.infer<typeof totpDeviceAddSchema>
+
+export const totpDeviceRemoveSchema = z.object({
+  currentPassword: z.string().min(1, { message: 'Mot de passe requis' }).max(256),
+})
+export type TotpDeviceRemove = z.infer<typeof totpDeviceRemoveSchema>
+
 export const logoutResultSchema = z.object({
   /** URL de déconnexion du fournisseur SSO, à ouvrir pour fermer aussi la session Keycloak. */
   redirectTo: z.string().nullable(),

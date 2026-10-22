@@ -17,6 +17,22 @@ import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { projectToInput } from '@/pages/projects/to-input'
 
+/** Enregistre la convention de tags d'un dépôt du projet (le reste du projet est inchangé). */
+export function saveTagConvention(
+  project: ProjectView,
+  sourceId: string,
+  convention: Partial<TagConvention>,
+) {
+  return api.projects.update(
+    project.id,
+    projectToInput(project, {
+      sources: projectToInput(project).sources.map((item) =>
+        item.key === sourceId ? { ...item, ...convention } : item,
+      ),
+    }),
+  )
+}
+
 const EXAMPLE_SHA = 'd4f61051a9b2c3d4e5f60718293a4b5c6d7e8f90'
 
 /**
@@ -50,15 +66,7 @@ export function TagConventionEditor({
   const changed = JSON.stringify(draft) !== JSON.stringify(source.tagConvention)
 
   const save = useMutation({
-    mutationFn: () =>
-      api.projects.update(
-        project.id,
-        projectToInput(project, {
-          sources: projectToInput(project).sources.map((item) =>
-            item.key === source.id ? { ...item, ...parsed.data! } : item,
-          ),
-        }),
-      ),
+    mutationFn: () => saveTagConvention(project, source.id, parsed.data!),
     onSuccess: async (updated) => {
       queryClient.setQueryData(['projects', project.slug], updated)
       await queryClient.invalidateQueries({ queryKey: ['projects', project.id, 'versions'] })

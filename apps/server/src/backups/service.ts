@@ -770,6 +770,40 @@ export class BackupService {
     if ((await stat(file)).size < 20) throw new StepError('export vide')
   }
 
+  /**
+   * Sauvegarde de Vercio avant une mise à jour : dans la destination de la sauvegarde de Vercio
+   * si elle est configurée (visible dans l'historique), sinon dans le dossier de données.
+   * Renvoie où elle se trouve.
+   */
+  async safetyBackup(user: User, label: string): Promise<string> {
+    const { db } = this.options
+    const plan = await this.vercioPlan()
+    const [destination] = plan
+      ? await db
+          .select()
+          .from(backupDestinations)
+          .where(eq(backupDestinations.id, plan.destinationId))
+      : []
+    if (destination) {
+      const id = await this.#createVercioBackup(destination, 'manual', user)
+      await this.#backup(id)
+      const [done] = await db.select().from(backups).where(eq(backups.id, id))
+      if (done?.status !== 'succeeded') {
+        throw new StepError(`sauvegarde impossible : ${done?.error ?? 'échec'}`)
+      }
+      return `destination « ${destination.name} »`
+    }
+    const dir = join(resolve(this.options.dataDir), 'updates')
+    await mkdir(dir, { recursive: true })
+    const stamp = this.#now()
+      .toISOString()
+      .replace(/\.\d+Z$/, 'Z')
+      .replaceAll(':', '-')
+    const file = join(dir, `vercio-avant-${label}-${stamp}.sql.gz`)
+    await this.#dumpVercio(file, async () => {})
+    return file
+  }
+
   // --- Restauration de Vercio --------------------------------------------------------------
 
   /** Restauration de Vercio en cours ou échouée ; une réussite redémarre Vercio. */
@@ -881,7 +915,9 @@ export class BackupService {
       //    quelle que soit la date de la base restaurée.
       const history = await db.select().from(backups)
 
-      // 5. Import en une transaction : en cas d'erreur, la base reste telle quelle.
+      // 5. Import en une transaction : en cas d'erreur, la base reste telle quelle. La base est
+      //    d'abord vidée : la sauvegarde recrée exactement sa version (tables ajoutées depuis
+      //    comprises), et les migrations la remettent à niveau au redémarrage qui suit.
       log('→ import de la base…')
       const { image, network } = await this.#vercioHelper()
       const { code, errors } = await this.#docker(
@@ -899,7 +935,7 @@ export class BackupService {
           'exec psql -X -q -v ON_ERROR_STOP=1 --single-transaction "$VERCIO_DUMP_URL"',
         ],
         {
-          stdin: createReadStream(file).pipe(createGunzip()),
+          stdin: Readable.from(withCleanSlate(createReadStream(file).pipe(createGunzip()))),
           env: { VERCIO_DUMP_URL: this.options.databaseUrl },
         },
       )
@@ -1331,3 +1367,12 @@ export function formatSize(bytes: number): string {
 }
 
 export { StepError as BackupError }
+
+/** Avant l'import d'une sauvegarde de Vercio : schémas vidés, dans la même transaction. */
+export const CLEAN_SLATE_SQL =
+  'DROP SCHEMA IF EXISTS drizzle CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;\n'
+
+async function* withCleanSlate(dump: AsyncIterable<Buffer | string>) {
+  yield Buffer.from(CLEAN_SLATE_SQL)
+  yield* dump
+}

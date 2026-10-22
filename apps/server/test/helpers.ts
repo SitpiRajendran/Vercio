@@ -13,6 +13,7 @@ import type {
   ComposeContainer,
   ContainerDetails,
   ContainerState,
+  DetachedRun,
   DockerEvent,
   EventOptions,
   ExecOptions,
@@ -20,6 +21,7 @@ import type {
   HostDriver,
   LogLine,
   LogOptions,
+  SelfContainer,
   StatsOptions,
 } from '../src/docker/host-driver.js'
 import {
@@ -206,6 +208,27 @@ export class FakeHost implements HostDriver {
     )
   }
 
+  /** Conteneur de Vercio (mise à jour) ; null : hors conteneur. */
+  self: SelfContainer | null = null
+  async selfContainer() {
+    return this.self ? structuredClone(this.self) : null
+  }
+
+  /** Conteneurs lancés à part (mise à jour de Vercio). */
+  detached: DetachedRun[] = []
+  async runDetached(options: DetachedRun) {
+    this.detached.push(structuredClone(options))
+    return `detache-${this.detached.length}`
+  }
+
+  /** Branchements en direct : réseau → conteneurs et alias. */
+  connected: { network: string; id: string; aliases: string[] }[] = []
+
+  async connectNetwork(name: string, containers: { id: string; aliases: string[] }[]) {
+    if (!this.dockerNetworks.has(name)) this.dockerNetworks.set(name, [])
+    for (const container of containers) this.connected.push({ network: name, ...container })
+  }
+
   async removeNetwork(name: string) {
     const containers = this.dockerNetworks.get(name)
     if (!containers) return 'missing' as const
@@ -253,6 +276,7 @@ export async function setupTestApp(
   env: Record<string, string> = {},
   runner?: CommandRunner,
   host: HostDriver = fakeHost,
+  update?: Parameters<typeof buildApp>[0]['update'],
 ) {
   if (!TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL requis')
   const config = loadConfig({
@@ -282,6 +306,7 @@ export async function setupTestApp(
     restart: () => {
       restarts.count++
     },
+    update,
   })
   return {
     app,

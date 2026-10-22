@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { DatabaseBackup, Download, KeyRound, Loader2, Play, RotateCcw, Trash2 } from 'lucide-react'
+import {
+  DatabaseBackup,
+  Download,
+  KeyRound,
+  Loader2,
+  Play,
+  RotateCcw,
+  Settings2,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
   type BackupPlanView,
@@ -17,7 +28,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -52,7 +71,7 @@ export function VercioBackupCard() {
     queryKey: KEY,
     queryFn: api.vercioBackup.page,
     refetchInterval: (query) =>
-      query.state.data?.backups.some((item) => item.status === 'running') ? 2000 : false,
+      query.state.data?.backups.some((item) => item.status === 'running') ? 2000 : 60_000,
   })
   const run = useMutation({
     mutationFn: api.vercioBackup.run,
@@ -66,9 +85,29 @@ export function VercioBackupCard() {
   // Restauration lancée : Vercio va redémarrer ; on attend son retour.
   const [restarting, setRestarting] = useState<string | null>(null)
   const restoreState = page.data?.restore ?? null
+  const [editingPlan, setEditingPlan] = useState(false)
+  const [showAll, setShowAll] = useState(false)
   if (restarting || restoreState?.status === 'running') {
     return <RestoreProgress state={restoreState} startedAt={restarting} />
   }
+
+  const plan = page.data?.plan ?? null
+  const backups = page.data?.backups ?? []
+  const last = backups.find((item) => item.status !== 'running') ?? null
+  const shown = showAll ? backups : backups.slice(0, 5)
+  // État en un coup d'œil : protégée, à surveiller, ou pas sauvegardée.
+  const health = !plan
+    ? { label: 'Non sauvegardée', className: 'text-warning border-warning/40', icon: ShieldAlert }
+    : last?.status === 'failed'
+      ? {
+          label: 'Dernière en échec',
+          className: 'text-destructive border-destructive/40',
+          icon: ShieldAlert,
+        }
+      : !plan.enabled
+        ? { label: 'À la demande', className: 'text-muted-foreground', icon: ShieldCheck }
+        : { label: 'Protégée', className: 'text-success border-success/40', icon: ShieldCheck }
+  const editing = editingPlan || !plan
 
   return (
     <Card className="gap-4">
@@ -78,71 +117,145 @@ export function VercioBackupCard() {
           Sauvegarde de Vercio
         </CardTitle>
         <CardDescription>
-          La base de Vercio : projets, environnements, variables, comptes, réglages et historique.
-          Les secrets y restent chiffrés par <code>VERCIO_SECRET_KEY</code> : gardez cette clé hors
-          du serveur, elle est indispensable pour restaurer.
+          Projets, variables, comptes, réglages et historique. Les secrets restent chiffrés par{' '}
+          <code>VERCIO_SECRET_KEY</code> : gardez cette clé hors du serveur, elle est indispensable
+          pour restaurer.
         </CardDescription>
+        {page.data && (
+          <CardAction>
+            <Badge variant="outline" className={cn('gap-1', health.className)}>
+              <health.icon className="size-3.5" />
+              {health.label}
+            </Badge>
+          </CardAction>
+        )}
       </CardHeader>
-      <CardContent className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-        {page.data && <PlanForm key={JSON.stringify(page.data.plan)} plan={page.data.plan} />}
-        <div className="min-w-0 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium">Dernières sauvegardes</p>
-            {page.data?.plan && (
+      <CardContent className="space-y-5">
+        {plan && (
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-lg border p-3">
+            <Fact label="Dernière sauvegarde">
+              {last ? (
+                <span title={formatDateTime(last.startedAt)}>
+                  {formatRelative(last.startedAt)} ·{' '}
+                  <span className={STATUS[last.status].className}>
+                    {STATUS[last.status].label.toLowerCase()}
+                  </span>
+                  {last.sizeBytes > 0 && <> · {formatBytes(last.sizeBytes)}</>}
+                </span>
+              ) : (
+                'jamais'
+              )}
+            </Fact>
+            <Fact label="Prochaine">
+              {plan.enabled && plan.nextRunAt
+                ? formatDateTime(plan.nextRunAt)
+                : 'aucune (à la demande)'}
+            </Fact>
+            <Fact label="Destination">
+              {plan.destination ? (
+                <>
+                  {plan.destination.name}
+                  {plan.destination.encrypted ? ' · chiffrée' : ' · en clair'}
+                </>
+              ) : (
+                <span className="text-destructive">supprimée</span>
+              )}
+            </Fact>
+            <div className="ml-auto flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => setEditingPlan((value) => !value)}>
+                <Settings2 />
+                Réglages
+              </Button>
               <Button size="sm" onClick={() => run.mutate()} disabled={run.isPending || running}>
                 {run.isPending || running ? <Loader2 className="animate-spin" /> : <Play />}
                 {running ? 'En cours…' : 'Sauvegarder maintenant'}
               </Button>
-            )}
+            </div>
           </div>
-          {page.data?.backups.length === 0 && (
-            <p className="text-muted-foreground rounded-lg border border-dashed py-6 text-center text-sm">
-              Aucune sauvegarde de Vercio.
-            </p>
-          )}
-          {!!page.data?.backups.length && (
+        )}
+
+        {!plan && page.data && (
+          <p className="text-sm">
+            Vercio ne se sauvegarde pas encore : si le serveur tombe, projets et réglages sont
+            perdus. Choisissez une destination et une fréquence.
+          </p>
+        )}
+        {editing && page.data && (
+          <div className="max-w-xl rounded-lg border p-4">
+            <PlanForm key={JSON.stringify(plan)} plan={plan} onDone={() => setEditingPlan(false)} />
+          </div>
+        )}
+
+        {restoreState?.status === 'failed' && (
+          <div className="border-destructive/40 text-destructive rounded-lg border p-3 text-xs">
+            <p className="font-medium">Restauration échouée : {restoreState.error}</p>
+            <p className="text-muted-foreground mt-1">La base de Vercio n’a pas été modifiée.</p>
+          </div>
+        )}
+
+        {backups.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Historique</p>
             <ul className="divide-y rounded-lg border">
-              {page.data.backups.map((backup) => (
+              {shown.map((backup) => (
                 <BackupLine key={backup.id} backup={backup} onRestore={setRestarting} />
               ))}
             </ul>
-          )}
-          {restoreState?.status === 'failed' && (
-            <div className="border-destructive/40 text-destructive rounded-lg border p-3 text-xs">
-              <p className="font-medium">Restauration échouée : {restoreState.error}</p>
-              <p className="text-muted-foreground mt-1">La base de Vercio n’a pas été modifiée.</p>
-            </div>
-          )}
-          <details className="text-muted-foreground text-xs">
-            <summary className="cursor-pointer">
-              Restaurer à la main (si Vercio ne démarre plus)
-            </summary>
-            <ol className="mt-2 list-decimal space-y-1 pl-4">
-              <li>
-                Téléchargez la sauvegarde (déjà déchiffrée) : <code>vercio-…-vercio.sql.gz</code>.
-              </li>
-              <li>
-                Sur le serveur, à côté du <code>docker-compose.yml</code> (même{' '}
-                <code>VERCIO_SECRET_KEY</code> dans le <code>.env</code>) :{' '}
-                <code>docker compose stop vercio</code>
-              </li>
-              <li>
-                <code>
-                  gunzip -c vercio-…-vercio.sql.gz | docker compose exec -T db psql -U vercio vercio
-                </code>
-              </li>
-              <li>
-                <code>docker compose start vercio</code>
-              </li>
-            </ol>
-          </details>
-        </div>
+            {backups.length > shown.length && (
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground text-xs underline-offset-4 hover:underline"
+                onClick={() => setShowAll(true)}
+              >
+                Afficher les {backups.length} sauvegardes
+              </button>
+            )}
+          </div>
+        )}
+        <details className="text-muted-foreground text-xs">
+          <summary className="cursor-pointer">
+            Restaurer à la main (si Vercio ne démarre plus)
+          </summary>
+          <ol className="mt-2 list-decimal space-y-1 pl-4">
+            <li>
+              Téléchargez la sauvegarde (déjà déchiffrée) : <code>vercio-…-vercio.sql.gz</code>.
+            </li>
+            <li>
+              Sur le serveur, à côté du <code>docker-compose.yml</code> (même{' '}
+              <code>VERCIO_SECRET_KEY</code> dans le <code>.env</code>) :{' '}
+              <code>docker compose stop vercio</code>
+            </li>
+            <li>
+              <code>
+                (echo &apos;DROP SCHEMA IF EXISTS drizzle CASCADE; DROP SCHEMA public CASCADE;
+                CREATE SCHEMA public;&apos;; gunzip -c vercio-…-vercio.sql.gz) | docker compose exec
+                -T db psql -v ON_ERROR_STOP=1 --single-transaction -U vercio vercio
+              </code>
+              <span className="block">
+                La base est vidée puis remplacée en une transaction : en cas d’erreur, rien ne
+                change. Une sauvegarde plus ancienne est mise à niveau au démarrage.
+              </span>
+            </li>
+            <li>
+              <code>docker compose start vercio</code>
+            </li>
+          </ol>
+        </details>
       </CardContent>
     </Card>
   )
 }
 
-function PlanForm({ plan }: { plan: BackupPlanView | null }) {
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-0.5">
+      <p className="text-muted-foreground text-xs">{label}</p>
+      <p className="text-sm">{children}</p>
+    </div>
+  )
+}
+
+function PlanForm({ plan, onDone }: { plan: BackupPlanView | null; onDone: () => void }) {
   const queryClient = useQueryClient()
   const destinations = useQuery({
     queryKey: ['backup-destinations', 'choices'],
@@ -160,6 +273,7 @@ function PlanForm({ plan }: { plan: BackupPlanView | null }) {
       api.vercioBackup.savePlan({ enabled, destinationId: chosen, schedule, keep: Number(keep) }),
     onSuccess: async () => {
       toast.success('Sauvegarde de Vercio enregistrée')
+      onDone()
       await queryClient.invalidateQueries({ queryKey: KEY })
       await queryClient.invalidateQueries({ queryKey: ['settings', 'backup-destinations'] })
     },
@@ -169,15 +283,24 @@ function PlanForm({ plan }: { plan: BackupPlanView | null }) {
     mutationFn: api.vercioBackup.removePlan,
     onSuccess: async () => {
       toast.success('Sauvegarde de Vercio désactivée')
+      onDone()
       await queryClient.invalidateQueries({ queryKey: KEY })
       await queryClient.invalidateQueries({ queryKey: ['settings', 'backup-destinations'] })
     },
   })
 
+  const changed =
+    !plan ||
+    chosen !== plan.destination?.id ||
+    enabled !== plan.enabled ||
+    JSON.stringify(schedule) !== JSON.stringify(plan.schedule) ||
+    Number(keep) !== plan.keep
+
   if (destinations.data?.length === 0) {
     return (
       <p className="text-muted-foreground text-sm">
-        Ajoutez d’abord une destination ci-dessous, de préférence hors de ce serveur.
+        Ajoutez d’abord une destination ci-dessous (« Ajouter une destination »), de préférence hors
+        de ce serveur.
       </p>
     )
   }
@@ -200,7 +323,7 @@ function PlanForm({ plan }: { plan: BackupPlanView | null }) {
         </Select>
       </div>
       <div className="flex items-center justify-between gap-4">
-        <Label htmlFor="vb-enabled">Automatique</Label>
+        <Label htmlFor="vb-enabled">Sauvegarde automatique</Label>
         <Switch id="vb-enabled" checked={enabled} onCheckedChange={setEnabled} />
       </div>
       {enabled && <ScheduleFields schedule={schedule} onChange={setSchedule} />}
@@ -219,20 +342,20 @@ function PlanForm({ plan }: { plan: BackupPlanView | null }) {
         />
         dernières
       </div>
-      {plan?.nextRunAt && (
-        <p className="text-muted-foreground text-xs">
-          Prochaine : {formatDateTime(plan.nextRunAt)}
-        </p>
-      )}
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={() => save.mutate()} disabled={save.isPending || !chosen}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={() => save.mutate()} disabled={save.isPending || !chosen || !changed}>
           {save.isPending && <Loader2 className="animate-spin" />}
-          Enregistrer
+          {plan ? 'Enregistrer' : 'Activer la sauvegarde'}
         </Button>
+        {plan && (
+          <Button variant="ghost" onClick={onDone}>
+            Annuler
+          </Button>
+        )}
         {plan && (
           <Button
             variant="ghost"
-            className="text-destructive hover:text-destructive"
+            className="text-destructive hover:text-destructive ml-auto"
             onClick={() => remove.mutate()}
             disabled={remove.isPending}
           >

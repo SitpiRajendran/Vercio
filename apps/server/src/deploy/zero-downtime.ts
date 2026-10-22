@@ -1,4 +1,5 @@
 import { isMap, parseDocument } from 'yaml'
+import { COMPOSE_YAML } from '../compose/yaml.js'
 
 /**
  * Mise à jour sans coupure (blue-green) : la nouvelle version d'un service démarre à côté de
@@ -153,10 +154,12 @@ export interface ZeroDowntimePlan {
 export function planZeroDowntime(compose: string, requested: string[]): ZeroDowntimePlan {
   const plan: ZeroDowntimePlan = { compose, services: [], relays: [], skipped: [] }
   if (!requested.length) return plan
-  const document = parseDocument(compose)
+  const document = parseDocument(compose, { merge: true })
   const services = document.get('services')
   if (!isMap(services)) return plan
-  const raw = document.toJS({ maxAliasCount: 100 }) as { services?: Record<string, Mapping> }
+  const raw = document.toJS({ maxAliasCount: COMPOSE_YAML.maxAliasCount }) as {
+    services?: Record<string, Mapping>
+  }
   for (const service of requested) {
     const definition = raw.services?.[service]
     if (!definition) {
@@ -172,7 +175,11 @@ export function planZeroDowntime(compose: string, requested: string[]): ZeroDown
     const ports = parsePortSpecs(definition.ports) ?? []
     if (!ports.length) continue
     const node = services.get(service, true)
-    if (isMap(node)) node.delete('ports')
+    // Ports hérités par `<<: *commun` : une liste vide explicite les annule.
+    if (isMap(node)) {
+      if (node.has('ports') && !node.has('<<')) node.delete('ports')
+      else node.set('ports', document.createNode([]))
+    }
     const networks = Array.isArray(definition.networks)
       ? definition.networks.filter((item): item is string => typeof item === 'string')
       : isMapping(definition.networks)
@@ -183,6 +190,36 @@ export function planZeroDowntime(compose: string, requested: string[]): ZeroDown
   if (plan.relays.length) plan.compose = document.toString()
   return plan
 }
+
+/**
+ * Page affichée par le relais quand le service ne répond pas : autonome (aucune ressource
+ * externe), claire et sombre, rechargée toutes les 10 s. Sans « ' » ni « $ » : elle est
+ * placée telle quelle dans une chaîne nginx.
+ */
+export const UNAVAILABLE_PAGE = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>Site momentanément indisponible</title>
+<style>
+:root { color-scheme: light dark; --bg: #f6f7f9; --card: #fff; --text: #1d2129; --muted: #667085; --accent: #3b6cf6; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0d0f13; --card: #171a21; --text: #eceef2; --muted: #9aa1ad; --accent: #7aa2ff; } }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+main { max-width: 440px; width: 100%; background: var(--card); border-radius: 16px; padding: 40px 32px; text-align: center; box-shadow: 0 1px 3px rgb(0 0 0 / 0.08); }
+.spinner { width: 40px; height: 40px; margin: 0 auto 24px; border: 3px solid color-mix(in srgb, var(--accent) 20%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+h1 { font-size: 20px; margin: 0 0 8px; }
+p { margin: 0; color: var(--muted); }
+.en { margin-top: 20px; font-size: 14px; }
+</style></head>
+<body><main>
+<div class="spinner" aria-hidden="true"></div>
+<h1>Site momentanément indisponible</h1>
+<p>Le service redémarre ou est en cours de mise à jour. Cette page se recharge toute seule.</p>
+<p class="en" lang="en">This site is temporarily unavailable and will be back shortly.</p>
+</main></body></html>`
 
 /**
  * Configuration nginx du relais : un serveur par port, vers `upstream` résolu à chaque requête
@@ -213,10 +250,19 @@ export function renderRelayConfig(relay: Relay, upstream = relay.service): strin
     # Version arrêtée pendant la bascule : la requête repart vers l'autre.
     proxy_next_upstream error timeout http_502;
     proxy_next_upstream_tries 3;
+    # Service injoignable (redémarrage, arrêt) : page d'attente au lieu d'un 502. Les erreurs
+    # renvoyées par l'application elle-même passent telles quelles.
+    error_page 502 503 504 = @vercio_down;
+  }
+  location @vercio_down {
+    default_type text/html;
+    add_header Cache-Control "no-store" always;
+    add_header Retry-After "10" always;
+    return 503 '${UNAVAILABLE_PAGE}';
   }
 }`,
   )
-  return `# Généré par Vercio : relais du service ${relay.service} (mise à jour sans coupure).
+  return `# Généré par Vercio : relais du service ${relay.service}.
 resolver 127.0.0.11 valid=1s ipv6=off;
 map $http_upgrade $vercio_connection {
   default upgrade;

@@ -36,6 +36,8 @@ export interface UserView {
   disabled: boolean
   /** Compte local : double authentification configurée. */
   totpEnabled: boolean
+  /** Compte local : applications d'authentification enregistrées. */
+  totpDevices: number
   /** Compte local : mot de passe temporaire pas encore remplacé. */
   passwordChangeRequired: boolean
   lastLoginAt: string | null

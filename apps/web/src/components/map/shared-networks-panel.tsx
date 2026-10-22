@@ -219,22 +219,29 @@ function NetworkCard({
   )
 }
 
-function NetworkDialog({
+/** Création ou modification d'un réseau partagé ; `initial` présélectionne le projet exposé. */
+export function NetworkDialog({
   network,
+  initial,
   onClose,
 }: {
   network: SharedNetworkView | null
+  initial?: { projectSlug: string; environmentId: string }
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects.list })
-  const [projectSlug, setProjectSlug] = useState(network?.exposedBy.projectSlug ?? '')
+  const [projectSlug, setProjectSlug] = useState(
+    network?.exposedBy.projectSlug ?? initial?.projectSlug ?? '',
+  )
   const project = useQuery({
     queryKey: ['projects', projectSlug],
     queryFn: () => api.projects.get(projectSlug),
     enabled: !!projectSlug,
   })
-  const [environmentId, setEnvironmentId] = useState(network?.exposedBy.environmentId ?? '')
+  const [environmentId, setEnvironmentId] = useState(
+    network?.exposedBy.environmentId ?? initial?.environmentId ?? '',
+  )
   const [service, setService] = useState(network?.exposedBy.service ?? '')
   const [name, setName] = useState(network?.name ?? '')
   const [alias, setAlias] = useState(network?.alias ?? '')

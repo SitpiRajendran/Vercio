@@ -37,6 +37,11 @@ const envSchema = z
     /** Installation sans interface : premier administrateur créé directement au démarrage. */
     VERCIO_ADMIN_USERNAME: z.string().min(1).default('admin'),
     VERCIO_ADMIN_PASSWORD: z.string().min(8).optional(),
+    /** Recherche des nouvelles versions de Vercio sur GitHub (`false` : jamais). */
+    VERCIO_UPDATE_CHECK: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
     VERCIO_LOCAL_AUTH: z
       .enum(['true', 'false'])
       .default('true')

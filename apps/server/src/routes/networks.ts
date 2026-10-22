@@ -2,10 +2,14 @@ import type { FastifyPluginAsync } from 'fastify'
 import { and, desc, eq, inArray, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import {
+  composeProjectName,
+  environmentLinkSchema,
   environmentNetworksSchema,
   sharedNetworkDockerName,
+  sharedNetworkNameSchema,
   sharedNetworkInputSchema,
   sharedNetworkUpdateSchema,
+  type EnvironmentLinkResult,
   type EnvironmentRef,
   type SharedNetworkView,
 } from '@vercio/shared'
@@ -235,6 +239,139 @@ export const networkRoutes: FastifyPluginAsync<{ db: Database; host: HostDriver 
     }
     await auditAction(db, request, 'network.delete', network.name, { docker })
     return { docker }
+  })
+
+  /** Nom libre pour un nouveau réseau, dérivé de l'alias (`skillin-db`, `skillin-db-2`…). */
+  async function freeNetworkName(alias: string) {
+    const base = alias.slice(0, 36).replace(/-+$/, '')
+    for (let index = 1; ; index++) {
+      const name = index === 1 ? base : `${base}-${index}`
+      const [taken] = await db
+        .select({ id: sharedNetworks.id })
+        .from(sharedNetworks)
+        .where(eq(sharedNetworks.name, name))
+        .limit(1)
+      if (!taken && sharedNetworkNameSchema.safeParse(name).success) return name
+    }
+  }
+
+  /**
+   * « Connecter à un projet » : en une fois, le service de l'autre projet est partagé (réseau créé
+   * s'il ne l'est pas déjà), cet environnement s'y abonne, et les conteneurs en marche des deux
+   * côtés sont branchés tout de suite, sans attendre leur prochain déploiement.
+   */
+  app.post('/projects/:id/environments/:envId/links', admin, async (request, reply) => {
+    const params = parseInput(z.object({ id: z.uuid(), envId: z.uuid() }), request.params, reply)
+    const input = params && parseInput(environmentLinkSchema, request.body, reply)
+    if (!params || !input) return
+    const found = await environmentWithProject(params.envId)
+    if (!found || found.project.id !== params.id) {
+      return reply.code(404).send({ error: 'Environnement introuvable' })
+    }
+    const target = await environmentWithProject(input.targetEnvironmentId)
+    if (!target) {
+      return reply.code(400).send({ error: 'Projet introuvable', field: 'targetEnvironmentId' })
+    }
+    if (target.project.id === found.project.id) {
+      return reply.code(400).send({
+        error: 'Les services d’un même projet se joignent déjà par leur nom',
+        field: 'targetEnvironmentId',
+      })
+    }
+    if (!(await checkService(target.environment.id, input.service))) {
+      return reply.code(400).send({
+        error: `Le service « ${input.service} » n’existe pas dans le dernier déploiement de ${target.project.name}`,
+        field: 'service',
+      })
+    }
+
+    // Service déjà partagé : on réutilise son réseau et son nom.
+    let [network] = await db
+      .select()
+      .from(sharedNetworks)
+      .where(
+        and(
+          eq(sharedNetworks.exposedByEnvironmentId, target.environment.id),
+          eq(sharedNetworks.service, input.service),
+        ),
+      )
+      .limit(1)
+    if (!network) {
+      if (await aliasTaken(input.alias)) {
+        return reply.code(409).send({
+          error: 'Ce nom est déjà utilisé par une autre liaison : choisissez-en un autre',
+          field: 'alias',
+        })
+      }
+      const name = await freeNetworkName(input.alias)
+      ;[network] = await db
+        .insert(sharedNetworks)
+        .values({
+          name,
+          exposedByEnvironmentId: target.environment.id,
+          service: input.service,
+          alias: input.alias,
+        })
+        .returning()
+      await auditAction(db, request, 'network.create', name, {
+        exposedBy: `${target.project.slug}/${target.environment.slug}`,
+        service: input.service,
+        alias: input.alias,
+      })
+    }
+    await db
+      .delete(environmentNetworks)
+      .where(
+        and(
+          eq(environmentNetworks.environmentId, params.envId),
+          eq(environmentNetworks.sharedNetworkId, network!.id),
+        ),
+      )
+    await db.insert(environmentNetworks).values({
+      environmentId: params.envId,
+      sharedNetworkId: network!.id,
+      services: input.services,
+    })
+    await auditAction(
+      db,
+      request,
+      'environment.networks.link',
+      `${found.project.slug}/${found.environment.slug}`,
+      { network: network!.name, service: `${target.project.slug}/${input.service}` },
+    )
+
+    // Branchement immédiat des conteneurs en marche ; sinon au prochain déploiement.
+    let applied = false
+    let detail: string | null = null
+    try {
+      const running = async (projectSlug: string, environmentSlug: string) =>
+        (await host.listContainers(composeProjectName(projectSlug, environmentSlug))).filter(
+          (container) => container.state === 'running' && !container.relayFor,
+        )
+      const exposed = (await running(target.project.slug, target.environment.slug)).filter(
+        (container) => container.service === input.service,
+      )
+      const subscribers = (await running(found.project.slug, found.environment.slug)).filter(
+        (container) => !input.services || input.services.includes(container.service),
+      )
+      if (!exposed.length) {
+        detail = `${input.service} de ${target.project.name} n’est pas en marche : la liaison se fera à son prochain démarrage par Vercio (déploiement).`
+      } else {
+        await host.connectNetwork(sharedNetworkDockerName(network!.name), [
+          ...exposed.map((container) => ({ id: container.id, aliases: [network!.alias] })),
+          ...subscribers.map((container) => ({ id: container.id, aliases: [] })),
+        ])
+        applied = true
+      }
+    } catch (error) {
+      detail = `Branchement immédiat impossible (${error instanceof Error ? error.message : error}) : la liaison se fera au prochain déploiement.`
+    }
+    const result: EnvironmentLinkResult = {
+      network: (await views()).find((view) => view.id === network!.id)!,
+      applied,
+      detail,
+    }
+    return reply.code(201).send(result)
   })
 
   /** Abonnements d'un environnement : remplacent les précédents, appliqués au déploiement. */

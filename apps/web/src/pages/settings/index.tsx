@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { hasRole } from '@vercio/shared'
 import { PageHeader } from '@/components/layout/app-layout'
@@ -9,11 +10,12 @@ import { BackupsSettingsTab } from './backups'
 import { GitProvidersTab } from './git-providers'
 import { NotificationsSettingsTab } from './notifications'
 import { RegistriesTab } from './registries'
+import { SystemInfoTab } from './system-info'
 import { EmptyState } from './resource-list'
 import { UsersTab } from './users'
 import { WebhooksSettingsTab } from './webhooks'
 
-const TABS = ['users', 'code', 'webhooks', 'notifications', 'sauvegardes'] as const
+const TABS = ['users', 'code', 'webhooks', 'notifications', 'sauvegardes', 'infos'] as const
 /** Anciens onglets, réunis dans « Code et images ». */
 const LEGACY: Record<string, string> = { git: 'code', registries: 'code' }
 
@@ -27,6 +29,17 @@ function initialTab(): string {
 export function SettingsPage() {
   const { data: user } = useCurrentUser()
   const isAdmin = user ? hasRole(user.roles, 'vercio-admin') : false
+  // Onglet lié à l'adresse (`#sauvegardes`) : un lien ou le bouton précédent l'ouvrent.
+  const [tab, setTab] = useState(initialTab)
+  useEffect(() => {
+    const sync = () => setTab(initialTab())
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
+  const choose = (value: string) => {
+    setTab(value)
+    window.history.replaceState(null, '', `#${value}`)
+  }
 
   return (
     <>
@@ -36,13 +49,14 @@ export function SettingsPage() {
       />
       <div className="p-4 md:p-6">
         {isAdmin ? (
-          <Tabs defaultValue={initialTab()}>
+          <Tabs value={tab} onValueChange={choose}>
             <StickyTabsList>
               <TabsTrigger value="users">Utilisateurs</TabsTrigger>
               <TabsTrigger value="code">Code et images</TabsTrigger>
               <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
               <TabsTrigger value="notifications">Notifications</TabsTrigger>
               <TabsTrigger value="sauvegardes">Sauvegardes</TabsTrigger>
+              <TabsTrigger value="infos">Pour les nerds</TabsTrigger>
             </StickyTabsList>
             <TabsContent value="users" className="pt-4">
               <UsersTab />
@@ -66,6 +80,9 @@ export function SettingsPage() {
             </TabsContent>
             <TabsContent value="sauvegardes" className="pt-4">
               <BackupsSettingsTab />
+            </TabsContent>
+            <TabsContent value="infos" className="pt-4">
+              <SystemInfoTab />
             </TabsContent>
           </Tabs>
         ) : (

@@ -65,6 +65,7 @@ function DeployPanel({ target, onClose }: { target: EnvTarget; onClose: () => vo
     onSuccess: (deployment) => {
       setStarted(deployment.id)
       void queryClient.invalidateQueries({ queryKey: ['overview'] })
+      void queryClient.invalidateQueries({ queryKey: ['deployments', 'list', target.envId] })
     },
   })
 
@@ -73,7 +74,7 @@ function DeployPanel({ target, onClose }: { target: EnvTarget; onClose: () => vo
       <SheetHeader className="pr-10">
         <SheetTitle className="flex items-center gap-2">
           <Rocket className="size-4" />
-          Mettre à jour {target.projectName}
+          {environment && !environment.current ? 'Déployer' : 'Mettre à jour'} {target.projectName}
         </SheetTitle>
         <SheetDescription>{target.envName}</SheetDescription>
       </SheetHeader>
@@ -114,8 +115,9 @@ function Confirm({
   return (
     <div className="space-y-4">
       <p className="text-muted-foreground text-sm">
-        Vercio télécharge les images (pull), puis remplace les conteneurs. Si le démarrage échoue,
-        la dernière version saine est rétablie automatiquement.
+        {environment.current
+          ? 'Vercio télécharge les images (pull), puis remplace les conteneurs. Si le démarrage échoue, la dernière version saine est rétablie automatiquement.'
+          : 'Vercio télécharge les images (pull), puis crée et démarre les conteneurs.'}
       </p>
       <div className="space-y-2 rounded-lg border p-3 text-sm">
         <p className="font-medium">Version déployée</p>
@@ -185,6 +187,7 @@ function Stream({ target, detail }: { target: EnvTarget; detail: DeploymentDetai
     void queryClient.invalidateQueries({ queryKey: ['overview'] })
     void queryClient.invalidateQueries({ queryKey: ['projects', target.projectSlug] })
     void queryClient.invalidateQueries({ queryKey: ['events'] })
+    void queryClient.invalidateQueries({ queryKey: ['deployments', 'list', target.envId] })
   }
 
   return (

@@ -143,7 +143,7 @@ export function CommandPalette() {
           projectCommands.push({
             id: `deploy-${env.id}`,
             group: 'Projets',
-            label: `Mettre à jour ${where}`,
+            label: `${env.current ? 'Mettre à jour' : 'Déployer'} ${where}`,
             keywords: 'deployer pull',
             icon: <Rocket />,
             run: () => workbench.openDeploy(target),

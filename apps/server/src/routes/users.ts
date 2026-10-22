@@ -9,13 +9,14 @@ import {
   type UserWithPassword,
 } from '@vercio/shared'
 import type { Database } from '../db/client.js'
-import { sessions, users } from '../db/schema.js'
+import { sessions, totpDevices, users } from '../db/schema.js'
 import { hashPassword, temporaryPassword } from '../lib/password.js'
 import { auditAction, isUniqueViolation, parseInput } from './helpers.js'
 
 type UserRow = typeof users.$inferSelect
 
-export function toUserView(row: UserRow): UserView {
+/** `devices` : applications d'authentification enregistrées sur le compte. */
+export function toUserView(row: UserRow, devices: number): UserView {
   return {
     id: row.id,
     username: row.username,
@@ -27,7 +28,8 @@ export function toUserView(row: UserRow): UserView {
       return parsed.success ? [parsed.data] : []
     }),
     disabled: row.disabled,
-    totpEnabled: Boolean(row.totpSecretEnc),
+    totpEnabled: devices > 0,
+    totpDevices: devices,
     passwordChangeRequired: row.passwordChangeRequired,
     lastLoginAt: row.lastLoginAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -72,6 +74,17 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
   const isActiveLocalAdmin = (row: UserRow) =>
     row.provider === 'local' && !row.disabled && row.roles.includes('vercio-admin')
 
+  /** Nombre d'applications d'authentification par compte. */
+  async function deviceCounts(): Promise<Map<string, number>> {
+    const rows = await db
+      .select({ userId: totpDevices.userId, value: sql<number>`count(*)::int` })
+      .from(totpDevices)
+      .groupBy(totpDevices.userId)
+    return new Map(rows.map((row) => [row.userId, row.value]))
+  }
+
+  const view = async (row: UserRow) => toUserView(row, (await deviceCounts()).get(row.id) ?? 0)
+
   const closeSessions = (userId: string) => db.delete(sessions).where(eq(sessions.userId, userId))
 
   const track = (request: FastifyRequest, action: string, row: UserRow, details?: object) =>
@@ -79,7 +92,8 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
 
   app.get('/', async (): Promise<UserView[]> => {
     const rows = await db.select().from(users).orderBy(asc(users.provider), asc(users.username))
-    return rows.map(toUserView)
+    const counts = await deviceCounts()
+    return rows.map((row) => toUserView(row, counts.get(row.id) ?? 0))
   })
 
   app.post('/', async (request, reply) => {
@@ -104,7 +118,7 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
         })
         .returning()
       await track(request, 'user.create', row!, { role: input.role })
-      const result: UserWithPassword = { user: toUserView(row!), temporaryPassword: password }
+      const result: UserWithPassword = { user: toUserView(row!, 0), temporaryPassword: password }
       return reply.code(201).send(result)
     } catch (error) {
       if (isUniqueViolation(error)) {
@@ -146,7 +160,7 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
     const [updated] = await db.update(users).set(values).where(eq(users.id, row.id)).returning()
     if (input.disabled && !row.disabled) await closeSessions(row.id)
     await track(request, 'user.update', row, values)
-    return toUserView(updated!)
+    return view(updated!)
   })
 
   /** Nouveau mot de passe temporaire, à changer à la prochaine connexion. */
@@ -168,7 +182,7 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
       .returning()
     await closeSessions(row.id)
     await track(request, 'user.reset_password', row)
-    const result: UserWithPassword = { user: toUserView(updated!), temporaryPassword: password }
+    const result: UserWithPassword = { user: await view(updated!), temporaryPassword: password }
     return result
   })
 
@@ -183,14 +197,10 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
         .code(400)
         .send({ error: 'La double authentification d’un compte SSO se gère chez le fournisseur' })
     }
-    const [updated] = await db
-      .update(users)
-      .set({ totpSecretEnc: null, totpLastStep: null })
-      .where(eq(users.id, row.id))
-      .returning()
+    await db.delete(totpDevices).where(eq(totpDevices.userId, row.id))
     await closeSessions(row.id)
     await track(request, 'user.reset_totp', row)
-    return toUserView(updated!)
+    return toUserView(row, 0)
   })
 
   app.delete('/:id', async (request, reply) => {

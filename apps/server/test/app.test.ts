@@ -193,6 +193,69 @@ describe.skipIf(!TEST_DATABASE_URL)('API — compte local', () => {
     expect(me.statusCode).toBe(401)
   })
 
+  it('gère plusieurs applications d’authentification, en gardant au moins une', async () => {
+    const session = await login()
+    const call = (
+      method: 'GET' | 'POST' | 'DELETE',
+      url: string,
+      payload?: object,
+      cookie = session,
+    ) => app.inject({ method, url, headers: { origin: ORIGIN, cookie }, payload })
+    const list = async () =>
+      (await call('GET', '/api/auth/totp/devices')).json<{ id: string; name: string }[]>()
+
+    const [first] = await list()
+    expect(first).toMatchObject({ name: 'Application d’authentification' })
+    const last = await call('DELETE', `/api/auth/totp/devices/${first!.id}`, {
+      currentPassword: NEW_PASSWORD,
+    })
+    expect(last.statusCode).toBe(400)
+    expect(last.json().error).toContain('au moins une')
+
+    // Ajout : QR code, puis nom, code et mot de passe actuel.
+    const setup = await call('POST', '/api/auth/totp/devices/setup', {})
+    const second = setup.json<{ secret: string }>().secret
+    const both = `${session}; ${cookieValue(setup, '__Secure-vercio_totp_device')}`
+    clock.tick()
+    const add = (payload: object) => call('POST', '/api/auth/totp/devices', payload, both)
+    const code = totpCode(second, clock.step())
+    const wrongPassword = await add({ name: 'Secours', code, currentPassword: 'mauvais' })
+    expect(wrongPassword.json()).toMatchObject({ field: 'currentPassword' })
+    const wrongCode = await add({ name: 'Secours', code: '000000', currentPassword: NEW_PASSWORD })
+    expect(wrongCode.json()).toMatchObject({ field: 'code' })
+    // Sans le cookie du QR code, rien n'est ajouté.
+    const expired = await call('POST', '/api/auth/totp/devices', {
+      name: 'Secours',
+      code,
+      currentPassword: NEW_PASSWORD,
+    })
+    expect(expired.statusCode).toBe(400)
+    const added = await add({ name: 'Secours', code, currentPassword: NEW_PASSWORD })
+    expect(added.statusCode).toBe(201)
+    expect((await list()).map((device) => device.name)).toEqual([
+      'Application d’authentification',
+      'Secours',
+    ])
+
+    // L'une ou l'autre permet de se connecter.
+    secret = second
+    await login()
+
+    expect(
+      (await call('DELETE', `/api/auth/totp/devices/${first!.id}`, { currentPassword: 'mauvais' }))
+        .statusCode,
+    ).toBe(400)
+    const removed = await call('DELETE', `/api/auth/totp/devices/${first!.id}`, {
+      currentPassword: NEW_PASSWORD,
+    })
+    expect(removed.statusCode).toBe(204)
+    expect((await list()).map((device) => device.name)).toEqual(['Secours'])
+    const missing = await call('DELETE', `/api/auth/totp/devices/${first!.id}`, {
+      currentPassword: NEW_PASSWORD,
+    })
+    expect(missing.statusCode).toBe(404)
+  })
+
   it('journalise les connexions', async () => {
     const rows = await db.execute<{ action: string; success: boolean }>(
       rawSql`select action, success from audit_logs`,
@@ -203,6 +266,8 @@ describe.skipIf(!TEST_DATABASE_URL)('API — compte local', () => {
     expect(actions).toContain('auth.totp.enroll:true')
     expect(actions).toContain('auth.login:true')
     expect(actions).toContain('auth.password.initial:true')
+    expect(actions).toContain('auth.totp.add:true')
+    expect(actions).toContain('auth.totp.remove:true')
   })
 })
 

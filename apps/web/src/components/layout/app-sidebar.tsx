@@ -4,7 +4,9 @@ import {
   Boxes,
   ChevronsUpDown,
   History,
+  Info,
   KeyRound,
+  ShieldCheck,
   LayoutGrid,
   LogOut,
   Moon,
@@ -46,6 +48,8 @@ import { cn } from '@/lib/utils'
 import { openCommandPalette } from './command-palette'
 import { api } from '@/lib/api'
 import { ChangePasswordDialog } from './change-password-dialog'
+import { TotpDevicesDialog } from './totp-devices-dialog'
+import { UPDATE_RUNNING, UpdateDialog, UpdateNotice, useUpdateStatus } from './vercio-update'
 import { meQueryKey } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
 
@@ -64,6 +68,10 @@ export function AppSidebar({ user }: { user: SessionUser }) {
   const isAdmin = hasRole(user.roles, 'vercio-admin')
   const { isMobile, setOpenMobile } = useSidebar()
   const closeOnMobile = () => isMobile && setOpenMobile(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
+  // Mise à jour en cours (lancée ici ou ailleurs) : la progression s'affiche d'office.
+  const update = useUpdateStatus()
+  const updating = !!update.data?.run && UPDATE_RUNNING.includes(update.data.run.phase)
 
   return (
     <Sidebar collapsible="icon">
@@ -173,6 +181,9 @@ export function AppSidebar({ user }: { user: SessionUser }) {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
+            <UpdateNotice onOpen={() => setAboutOpen(true)} />
+          </SidebarMenuItem>
+          <SidebarMenuItem>
             <SidebarMenuButton
               asChild
               tooltip="Paramètres"
@@ -185,10 +196,13 @@ export function AppSidebar({ user }: { user: SessionUser }) {
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <UserMenu user={user} />
+            <UserMenu user={user} onAbout={() => setAboutOpen(true)} />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      {(aboutOpen || updating) && (
+        <UpdateDialog isAdmin={isAdmin} onClose={() => setAboutOpen(false)} />
+      )}
     </Sidebar>
   )
 }
@@ -201,10 +215,11 @@ const TONE_LABELS: Record<Tone, string> = {
   busy: 'Déploiement en cours',
 }
 
-function UserMenu({ user }: { user: SessionUser }) {
+function UserMenu({ user, onAbout }: { user: SessionUser; onAbout: () => void }) {
   const { theme, toggleTheme } = useTheme()
   const queryClient = useQueryClient()
   const [changingPassword, setChangingPassword] = useState(false)
+  const [managingTotp, setManagingTotp] = useState(false)
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: ({ redirectTo }) => {
@@ -256,6 +271,15 @@ function UserMenu({ user }: { user: SessionUser }) {
               Changer mon mot de passe
             </DropdownMenuItem>
           )}
+          {user.provider === 'local' && (
+            <DropdownMenuItem onSelect={() => setManagingTotp(true)}>
+              <ShieldCheck />
+              Double authentification
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onSelect={onAbout}>
+            <Info />À propos de Vercio
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => logout.mutate()}>
             <LogOut />
             Se déconnecter
@@ -263,6 +287,7 @@ function UserMenu({ user }: { user: SessionUser }) {
         </DropdownMenuContent>
       </DropdownMenu>
       {changingPassword && <ChangePasswordDialog onClose={() => setChangingPassword(false)} />}
+      {managingTotp && <TotpDevicesDialog onClose={() => setManagingTotp(false)} />}
     </>
   )
 }

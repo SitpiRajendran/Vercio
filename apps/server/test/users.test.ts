@@ -152,6 +152,7 @@ describe.skipIf(!TEST_DATABASE_URL)('API — comptes utilisateurs', () => {
     expect(me.json()).toMatchObject({ username: 'carole', roles: ['vercio-viewer'] })
     expect(await byName('carole')).toMatchObject({
       totpEnabled: true,
+      totpDevices: 1,
       passwordChangeRequired: false,
     })
     // Un lecteur n'administre pas les comptes.

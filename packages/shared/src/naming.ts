@@ -68,3 +68,55 @@ export function commitImageTag(template: string, sha: string): string {
     .replace(/\{sha:(\d{1,2})\}/g, (_match, length: string) => sha.slice(0, Number(length)))
     .replaceAll('{sha}', sha)
 }
+
+/** Tag d'image qui ressemble à un SHA de commit (court ou complet). */
+const COMMIT_TAG = /^[0-9a-f]{7,40}$/
+
+/** Correction de la convention de tags déduite des tags présents dans le registry. */
+export interface TagConventionSuggestion {
+  /** Tag du dernier build trouvé, et le modèle qui le désigne (`{branch}` ou tag fixe). */
+  latest: { tag: string; template: string } | null
+  /** Images par commit trouvées alors qu'aucun tag de version n'est proposé. */
+  commits: { template: string; example: string } | null
+}
+
+/**
+ * Propose la convention qui correspond à ce que pousse la CI : un tag au nom de la branche
+ * (`prod`) comme dernier build, et des images par commit (`e8193b2f`) comme versions.
+ */
+export function suggestTagConvention(input: {
+  branch: string
+  registryTags: readonly string[]
+  latestAvailable: boolean
+  versionSource: 'git_tags' | 'commits'
+  hasVersions: boolean
+}): TagConventionSuggestion | null {
+  const tags = input.registryTags
+  let latest: TagConventionSuggestion['latest'] = null
+  if (!input.latestAvailable) {
+    const branchTag = branchTagPart(input.branch)
+    if (tags.includes(branchTag)) latest = { tag: branchTag, template: '{branch}' }
+    else if (tags.includes(`${branchTag}-latest`)) {
+      latest = { tag: `${branchTag}-latest`, template: '{branch}-latest' }
+    } else {
+      // Un seul tag « mobile » (ni commit, ni version) : c'est lui que la CI déplace.
+      const moving = tags.filter((tag) => !COMMIT_TAG.test(tag) && !isVersionTag(tag))
+      if (moving.length === 1) latest = { tag: moving[0]!, template: moving[0]! }
+    }
+  }
+  let commits: TagConventionSuggestion['commits'] = null
+  if (!input.hasVersions && input.versionSource === 'git_tags') {
+    const shas = tags.filter((tag) => COMMIT_TAG.test(tag))
+    if (shas.length) {
+      // Longueur la plus fréquente : 8 avec $CI_COMMIT_SHORT_SHA, 40 avec $CI_COMMIT_SHA.
+      const counts = new Map<number, number>()
+      for (const sha of shas) counts.set(sha.length, (counts.get(sha.length) ?? 0) + 1)
+      const length = [...counts].sort((a, b) => b[1] - a[1])[0]![0]
+      commits = {
+        template: length === 40 ? '{sha}' : `{sha:${length}}`,
+        example: shas.find((sha) => sha.length === length)!,
+      }
+    }
+  }
+  return latest || commits ? { latest, commits } : null
+}

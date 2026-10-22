@@ -412,6 +412,43 @@ export interface EnvironmentSourceView {
   mode: 'tracking' | 'locked'
 }
 
+/**
+ * Port ouvert par Vercio vers l'extérieur : `published` sur toutes les interfaces de l'hôte,
+ * vers le port `target` du service. Ajouté au fichier Compose à chaque déploiement.
+ */
+export const publishedPortSchema = z.object({
+  service: z.string().trim().min(1, { message: 'Service requis' }).max(100),
+  published: z.coerce
+    .number({ message: 'Port requis' })
+    .int({ message: 'Port invalide' })
+    .min(1, { message: 'Entre 1 et 65535' })
+    .max(65535, { message: 'Entre 1 et 65535' }),
+  target: z.coerce
+    .number({ message: 'Port requis' })
+    .int({ message: 'Port invalide' })
+    .min(1, { message: 'Entre 1 et 65535' })
+    .max(65535, { message: 'Entre 1 et 65535' }),
+  protocol: z.enum(['tcp', 'udp']).default('tcp'),
+  /**
+   * Site ou API HTTP : un relais tient le port et affiche une page « site indisponible » quand
+   * le service ne répond pas (redémarrage, mise à jour), au lieu d'une erreur 502.
+   */
+  page: z.boolean().default(false),
+})
+export type PublishedPortRule = z.output<typeof publishedPortSchema>
+
+export const environmentPortsSchema = z.object({
+  ports: z
+    .array(publishedPortSchema)
+    .max(50)
+    .refine(
+      (ports) =>
+        new Set(ports.map((port) => `${port.published}/${port.protocol}`)).size === ports.length,
+      { message: 'Le même port du serveur est ouvert deux fois' },
+    ),
+})
+export type EnvironmentPortsInput = z.input<typeof environmentPortsSchema>
+
 export interface EnvironmentView {
   id: string
   name: string
@@ -421,6 +458,8 @@ export interface EnvironmentView {
   restartPolicy: RestartPolicy
   /** Projet lancé hors de Vercio, remplacé au premier déploiement réussi. */
   migratingFrom: string | null
+  /** Ports ouverts vers l'extérieur par Vercio (en plus de ceux du fichier Compose). */
+  publishedPorts: PublishedPortRule[]
   /** Dernier déploiement, et dernier déploiement réussi (version en service). */
   lastDeployment: DeploymentSummary | null
   current: DeploymentSummary | null
@@ -506,6 +545,11 @@ export interface VersionChoices {
   /** Les 5 versions les plus récentes de la branche (tags ou commits), du plus récent au plus ancien. */
   tags: VersionTag[]
   warnings: string[]
+  /**
+   * Tags présents dans le registry pour toutes les images suivies, lus seulement quand le dernier
+   * build ou les versions sont introuvables : de quoi proposer la bonne convention de tags.
+   */
+  registryTags: string[]
   checkedAt: string
 }
 
@@ -518,7 +562,16 @@ export interface DeploymentSummary {
   status: DeploymentStatus
   username: string | null
   /** Par source : branche, version demandée (`latest` ou tag) et tag effectivement déployé. */
-  versions: Record<string, { branch: string; ref: string; tag: string }>
+  versions: Record<
+    string,
+    {
+      branch: string
+      ref: string
+      tag: string
+      /** Dernier build : commit (`e8193b2f`) ou tag de version qui l'a produit, s'il est connu. */
+      version?: string
+    }
+  >
   /** Par service suivi : image épinglée par digest. */
   images: Record<string, string>
   error: string | null

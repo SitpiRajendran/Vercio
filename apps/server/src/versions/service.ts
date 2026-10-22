@@ -32,10 +32,6 @@ export class VersionService {
     branch: string,
     refresh = false,
   ): Promise<VersionChoices | null> {
-    const key = `${appSourceId}|${branch}`
-    const cached = this.#cache.get(key)
-    if (!refresh && cached && cached.expiresAt > Date.now()) return cached.value
-
     const [row] = await this.db
       .select({ source: appSources, provider: gitProviders })
       .from(appSources)
@@ -44,6 +40,17 @@ export class VersionService {
       .limit(1)
     if (!row) return null
     const { source, provider } = row
+    // La convention de tags fait partie de la clé : la changer ne sert pas l'ancienne réponse.
+    const key = [
+      appSourceId,
+      branch,
+      channelTag(branch, source),
+      source.versionSource,
+      source.tagPattern,
+      source.commitTagTemplate,
+    ].join('|')
+    const cached = this.#cache.get(key)
+    if (!refresh && cached && cached.expiresAt > Date.now()) return cached.value
 
     const git = gitProviderClient({
       type: provider.type,
@@ -116,6 +123,21 @@ export class VersionService {
           tag: latestTag,
         }),
       )
+    }
+    if (tracked.length && (!value.latest.available || value.tags.length === 0)) {
+      const lists = await Promise.all(
+        tracked.map(async (entry) => {
+          try {
+            return await (await clientFor(entry.registry)).listTags(entry.service.imageRepository)
+          } catch {
+            return null
+          }
+        }),
+      )
+      // Tags communs à toutes les images : un tag poussé pour une seule ne suffit pas.
+      value.registryTags = lists.some((list) => !list)
+        ? []
+        : lists.reduce((common, list) => common!.filter((tag) => list!.includes(tag)))!
     }
     this.#cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS })
     return value

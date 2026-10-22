@@ -5,6 +5,7 @@ import { useContainerActions } from '@/components/containers/container-actions'
 import { ContainerList } from '@/components/containers/container-list'
 import { ResourcesCard } from '@/components/containers/resources-card'
 import { ActivityList } from '@/components/events/activity-list'
+import { EnvironmentPorts } from '@/components/projects/environment-ports'
 import { EnvironmentNetworks } from '@/components/networks/environment-networks'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -90,10 +91,26 @@ export function OverviewTab({
         <Card className="gap-3">
           <CardHeader>
             <CardTitle>Liens avec d’autres projets</CardTitle>
-            <CardDescription>Réseaux partagés exposés ou rejoints.</CardDescription>
+            <CardDescription>
+              Services d’autres projets joints par un nom, et ceux que ce projet partage.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <EnvironmentNetworks project={project} environment={environment} canEdit={isAdmin} />
+          </CardContent>
+        </Card>
+        <Card className="gap-3">
+          <CardHeader>
+            <CardTitle>Ports ouverts</CardTitle>
+            <CardDescription>Ports du serveur ouverts vers les conteneurs.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <EnvironmentPorts
+              project={project}
+              environment={environment}
+              live={live}
+              target={target}
+            />
           </CardContent>
         </Card>
         <Card className="gap-3">

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Loader2, Network } from 'lucide-react'
+import { Link2, Loader2, Share2 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { EnvironmentView, ProjectView, SharedNetworkView } from '@vercio/shared'
 import { Button } from '@/components/ui/button'
@@ -17,20 +17,28 @@ import {
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
 import { useProjectCompose } from '@/lib/project-compose'
+import { ConnectProjectDialog } from './connect-project-dialog'
 import { envLabel, useSharedNetworks } from './dependencies'
 
-/** Réseaux partagés d'un environnement : ce qu'il expose, ce qu'il rejoint. */
+/**
+ * Liens d'un environnement avec d'autres projets : les services qu'il joint (« connecté à ») et
+ * ceux qu'il partage (« utilisé par »). Une liaison se crée depuis le projet qui consomme.
+ */
 export function EnvironmentNetworks({
   project,
   environment,
   canEdit,
+  actionsOnly = false,
 }: {
   project: ProjectView
   environment: EnvironmentView
   canEdit: boolean
+  /** Boutons seuls (la carte affiche déjà les liaisons). */
+  actionsOnly?: boolean
 }) {
   const networks = useSharedNetworks()
   const [editing, setEditing] = useState(false)
+  const [connecting, setConnecting] = useState(false)
   const exposed = (networks.data ?? []).filter(
     (network) => network.exposedBy.environmentId === environment.id,
   )
@@ -40,44 +48,80 @@ export function EnvironmentNetworks({
   if (!networks.data || (!exposed.length && !joined.length && !canEdit)) return null
 
   return (
-    <div className="space-y-1.5 text-xs">
-      {exposed.map((network) => (
-        <p key={network.id} className="flex flex-wrap items-center gap-1.5">
-          <Network className="text-muted-foreground size-3.5" />
-          Expose <code>{network.exposedBy.service}</code> sous <code>{network.alias}</code>
-          <span className="text-muted-foreground">
-            ·{' '}
-            {network.subscribers.length
-              ? `utilisé par ${network.subscribers.map(envLabel).join(', ')}`
-              : 'aucun abonné'}
-          </span>
-        </p>
-      ))}
-      {joined.map((network) => {
-        const services = network.subscribers.find(
-          (subscriber) => subscriber.environmentId === environment.id,
-        )?.services
-        return (
-          <p key={network.id} className="flex flex-wrap items-center gap-1.5">
-            <Network className="text-muted-foreground size-3.5" />
-            Joint <code>{network.alias}</code>
-            <span className="text-muted-foreground">
-              ({envLabel(network.exposedBy)}) depuis{' '}
-              {services ? services.join(', ') : 'tous les services'}
-            </span>
-          </p>
-        )
-      })}
+    <div className="space-y-2 text-sm">
+      {!actionsOnly &&
+        joined.map((network) => {
+          const services = network.subscribers.find(
+            (subscriber) => subscriber.environmentId === environment.id,
+          )?.services
+          return (
+            <div key={network.id} className="flex items-start gap-2">
+              <Link2 className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+              <div className="min-w-0">
+                <p>
+                  Connecté à <span className="font-medium">{network.exposedBy.service}</span> de{' '}
+                  <Link
+                    to="/projets/$slug"
+                    params={{ slug: network.exposedBy.projectSlug }}
+                    className="font-medium hover:underline"
+                  >
+                    {network.exposedBy.projectName}
+                  </Link>
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  Adresse : <code className="text-foreground">{network.alias}</code>
+                  {services ? ` · depuis ${services.join(', ')}` : ''}
+                </p>
+              </div>
+            </div>
+          )
+        })}
+      {!actionsOnly &&
+        exposed.map((network) => (
+          <div key={network.id} className="flex items-start gap-2">
+            <Share2 className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+            <div className="min-w-0">
+              <p>
+                <span className="font-medium">{network.exposedBy.service}</span> partagé sous{' '}
+                <code>{network.alias}</code>
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {network.subscribers.length
+                  ? `Utilisé par ${network.subscribers.map(envLabel).join(', ')}`
+                  : 'Aucun projet connecté'}
+              </p>
+            </div>
+          </div>
+        ))}
       {canEdit && (
-        <Button
-          variant="link"
-          size="sm"
-          className="h-auto gap-1 p-0 text-xs"
-          onClick={() => setEditing(true)}
-        >
-          <Network className="size-3.5" />
-          {joined.length ? 'Modifier les réseaux partagés' : 'Rejoindre un réseau partagé'}
-        </Button>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1">
+          <Button size="sm" variant="outline" onClick={() => setConnecting(true)}>
+            <Link2 />
+            Connecter à un autre projet
+          </Button>
+          {joined.length > 0 && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-xs"
+              onClick={() => setEditing(true)}
+            >
+              Modifier les liaisons
+            </Button>
+          )}
+        </div>
+      )}
+      {canEdit && !actionsOnly && !exposed.length && !joined.length && (
+        <p className="text-muted-foreground text-xs">
+          Pour joindre la base de données d’un autre projet, par exemple.
+        </p>
+      )}
+      {connecting && (
+        <ConnectProjectDialog
+          project={project}
+          environment={environment}
+          onClose={() => setConnecting(false)}
+        />
       )}
       {editing && (
         <SubscriptionsDialog
@@ -143,7 +187,7 @@ function SubscriptionsDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Réseaux partagés de « {environment.name} »</DialogTitle>
+          <DialogTitle>Liaisons de « {environment.name} »</DialogTitle>
           <DialogDescription>
             Les services choisis rejoignent le réseau et atteignent le service exposé par son alias
             (par exemple <code>postgres-prod:5432</code>). Appliqué au prochain déploiement.
@@ -151,10 +195,7 @@ function SubscriptionsDialog({
         </DialogHeader>
         {available.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            Aucun réseau partagé disponible.{' '}
-            <Link to="/reseaux" className="underline">
-              Créer un réseau partagé
-            </Link>
+            Aucune liaison : utilisez « Connecter à un autre projet ».
           </p>
         ) : (
           <ul className="max-h-[60vh] space-y-3 overflow-y-auto">

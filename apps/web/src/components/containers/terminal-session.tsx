@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { TerminalStatus, TerminalTab } from '@/components/workbench/workbench'
 
@@ -50,6 +50,23 @@ export default function TerminalPanes({
       ))}
     </>
   )
+}
+
+/** Cause d'un terminal refusé : session, rôle, conteneur, adresse de Vercio ou reverse proxy. */
+async function diagnoseTerminal(projectId: string, envId: string, containerId: string) {
+  let check: Awaited<ReturnType<typeof api.containers.terminalCheck>>
+  try {
+    check = await api.containers.terminalCheck(projectId, envId, containerId)
+  } catch (error) {
+    return error instanceof ApiError && error.status === 401
+      ? 'Session expirée : reconnectez-vous.'
+      : 'Vercio est injoignable.'
+  }
+  if (!check.allowed) return check.reason ?? 'Terminal refusé.'
+  if (check.publicOrigin !== window.location.origin) {
+    return `Vercio est configuré pour ${check.publicOrigin} (PUBLIC_URL) mais ouvert sur ${window.location.origin} : le terminal n’est accepté que depuis l’adresse configurée. Corrigez PUBLIC_URL dans .env, ou ouvrez Vercio par cette adresse.`
+  }
+  return 'Le reverse proxy bloque le terminal : il doit laisser passer les WebSockets (en-têtes Upgrade et Connection, voir l’exemple nginx du README).'
 }
 
 function TerminalPane({
@@ -109,6 +126,7 @@ function TerminalPane({
       <TerminalView
         key={`${shell}-${session}`}
         visible={visible}
+        diagnose={() => diagnoseTerminal(tab.projectId, tab.envId, tab.container.id)}
         url={(cols, rows) =>
           api.containers.terminalUrl(tab.projectId, tab.envId, tab.container.id, {
             shell,
@@ -155,20 +173,23 @@ function StatusBadge({ status }: { status: TerminalStatus }) {
 
 function TerminalView({
   url,
+  diagnose,
   visible,
   onStatus,
 }: {
   url: (cols: number, rows: number) => string
+  /** Raison d'une connexion refusée, que le navigateur ne donne pas. */
+  diagnose: () => Promise<string>
   visible: boolean
   onStatus: (status: TerminalStatus) => void
 }) {
   const container = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<{ terminal: Terminal; fit: () => void } | null>(null)
   // Adresse lue à l'ouverture seulement : une nouvelle session passe par une nouvelle clé.
-  const initial = useRef({ url, onStatus })
+  const initial = useRef({ url, onStatus, diagnose })
 
   useEffect(() => {
-    const { url, onStatus } = initial.current
+    const { url, onStatus, diagnose } = initial.current
     const element = container.current
     if (!element) return
     const terminal = new Terminal({
@@ -216,13 +237,19 @@ function TerminalView({
         onStatus({ state: 'error', message: message.message })
       }
     }
+    let opened = false
+    socket.onopen = () => {
+      opened = true
+    }
     socket.onclose = () => {
       if (finished) return
       finished = true
-      onStatus({
-        state: 'error',
-        message: 'Connexion fermée : session expirée, droits insuffisants ou Vercio injoignable.',
-      })
+      if (opened) {
+        onStatus({ state: 'error', message: 'Connexion au terminal interrompue.' })
+        return
+      }
+      onStatus({ state: 'error', message: 'Connexion refusée : recherche de la cause…' })
+      void diagnose().then((message) => onStatus({ state: 'error', message }))
     }
     const input = terminal.onData((data) => send({ type: 'input', data }))
     const resize = terminal.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }))

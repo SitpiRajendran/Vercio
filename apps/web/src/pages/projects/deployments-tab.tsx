@@ -6,6 +6,7 @@ import type { DeploymentSummary, ProjectView } from '@vercio/shared'
 import {
   DeploymentStatusBadge,
   deployedTags,
+  deployedVersions,
   duration,
   TRIGGER_LABELS,
 } from '@/components/projects/deployment-status'
@@ -28,8 +29,11 @@ export function DeploymentsTab({
     queryKey: ['deployments', 'list', envId],
     queryFn: () => api.deployments.list(project.id, envId),
     enabled: Boolean(envId),
+    // En cours : suivi rapproché ; sinon de quoi voir les déploiements lancés ailleurs (webhook).
     refetchInterval: (query) =>
-      query.state.data?.some((d) => d.status === 'running' || d.status === 'queued') ? 3000 : false,
+      query.state.data?.some((d) => d.status === 'running' || d.status === 'queued')
+        ? 3000
+        : 30_000,
   })
 
   if (!environment) {
@@ -97,7 +101,15 @@ function DeploymentRow({
       <DeploymentStatusBadge status={deployment.status} />
       <div className="min-w-0 flex-1">
         <p>
-          <span className="font-mono">{deployedTags(deployment)}</span>
+          {/* En service : le tag suivi (`prod`) ; les précédents : le commit qu'il désignait. */}
+          <span className="font-mono">
+            {isCurrent ? deployedTags(deployment) : deployedVersions(deployment)}
+          </span>
+          {isCurrent && deployedVersions(deployment) !== deployedTags(deployment) && (
+            <span className="text-muted-foreground ml-2 font-mono text-xs">
+              {deployedVersions(deployment)}
+            </span>
+          )}
           {isCurrent && <span className="text-success ml-2 text-xs">en service</span>}
         </p>
         <p className="text-muted-foreground text-xs" title={formatDateTime(deployment.createdAt)}>

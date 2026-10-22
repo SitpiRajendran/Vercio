@@ -1,3 +1,4 @@
+import { join, relative, resolve } from 'node:path'
 import type { FastifyPluginAsync } from 'fastify'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { z } from 'zod'
@@ -22,6 +23,7 @@ import {
 import { BackupError, nextRun, type BackupService } from '../backups/service.js'
 import { BackupStoreError } from '../backups/store.js'
 import type { Database } from '../db/client.js'
+import type { HostDriver, SelfContainer } from '../docker/host-driver.js'
 import {
   backupDestinations,
   backupPlans,
@@ -52,6 +54,19 @@ function location(row: Pick<DestinationRow, 'type' | 'config'>): string {
   return `s3://${path}${config.endpoint ? ` (${new URL(config.endpoint).host})` : ''}`
 }
 
+/**
+ * Chemin sur le serveur d'un dossier vu par Vercio : celui du montage qui le contient (le plus
+ * précis) ; null s'il n'est sous aucun montage. Hors conteneur, le chemin est déjà celui du serveur.
+ */
+export function hostLocation(path: string, self: SelfContainer | null): string | null {
+  if (!self) return path
+  const target = resolve(path)
+  const mount = self.mounts
+    .filter((item) => target === item.destination || target.startsWith(`${item.destination}/`))
+    .sort((a, b) => b.destination.length - a.destination.length)[0]
+  return mount ? join(mount.source, relative(mount.destination, target)) : null
+}
+
 function toRestoreView(row: RestoreRow): BackupRestoreView {
   return {
     id: row.id,
@@ -69,7 +84,8 @@ export const backupRoutes: FastifyPluginAsync<{
   db: Database
   box: SecretBox
   backups: BackupService
-}> = async (app, { db, box, backups: service }) => {
+  host: HostDriver
+}> = async (app, { db, box, backups: service, host }) => {
   const viewer = { preHandler: app.requireRole('vercio-viewer') }
   const deployer = { preHandler: app.requireRole('vercio-deployer') }
   const admin = { preHandler: app.requireRole('vercio-admin') }
@@ -94,6 +110,12 @@ export const backupRoutes: FastifyPluginAsync<{
       .from(backupPlans)
       .groupBy(backupPlans.destinationId)
     const vercio = await service.vercioPlan()
+    let self: SelfContainer | null | undefined
+    try {
+      self = await host.selfContainer()
+    } catch {
+      self = undefined
+    }
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -105,6 +127,9 @@ export const backupRoutes: FastifyPluginAsync<{
       plans:
         (counts.find((count) => count.id === row.id)?.count ?? 0) +
         (vercio?.destinationId === row.id ? 1 : 0),
+      ...(row.type === 'local' && self !== undefined
+        ? { hostPath: hostLocation((row.config as LocalDestinationConfig).path, self) }
+        : {}),
       createdAt: row.createdAt.toISOString(),
     }))
   }

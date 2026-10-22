@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify'
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import {
   composeProjectName,
@@ -10,6 +10,7 @@ import {
   type ProjectAppearance,
   createProjectSchema,
   environmentInputSchema,
+  environmentPortsSchema,
   environmentSourceInputSchema,
   restartPolicySchema,
   type RestartPolicy,
@@ -20,6 +21,7 @@ import {
   type ProjectView,
   type VariableView,
   hasRole,
+  type PublishedPortRule,
 } from '@vercio/shared'
 import { analyzeCompose } from '../compose/analyze.js'
 import { externalComposeProjects } from '../compose/imports.js'
@@ -232,6 +234,7 @@ export const projectRoutes: FastifyPluginAsync<{
         composeProject: composeProjectName(project.slug, env.slug),
         restartPolicy: env.restartPolicy as RestartPolicy,
         migratingFrom: env.migratingFrom,
+        publishedPorts: (env.publishedPorts as PublishedPortRule[]) ?? [],
         sources: envSources
           .filter((es) => es.environmentId === env.id)
           .map((es) => ({
@@ -767,6 +770,67 @@ export const projectRoutes: FastifyPluginAsync<{
     } catch (error) {
       return sendHttpError(reply, error)
     }
+  })
+
+  /**
+   * Ports ouverts vers l'extérieur (toutes les interfaces de l'hôte), ajoutés au fichier Compose
+   * au prochain déploiement. Réservé aux administrateurs : c'est une ouverture sur Internet.
+   */
+  app.put('/:id/environments/:envId/ports', admin, async (request, reply) => {
+    const params = parseInput(envParams, request.params, reply)
+    const input = params && parseInput(environmentPortsSchema, request.body, reply)
+    if (!params || !input) return
+    const found = await findEnvironment(params.id, params.envId)
+    if (!found) return reply.code(404).send({ error: 'Environnement introuvable' })
+
+    // Services connus : ceux du dernier déploiement réussi (pas encore déployé : pas de contrôle).
+    const [last] = await db
+      .select({ compose: deployments.composeRendered })
+      .from(deployments)
+      .where(and(eq(deployments.environmentId, params.envId), eq(deployments.status, 'succeeded')))
+      .orderBy(desc(deployments.createdAt))
+      .limit(1)
+    const services = last?.compose
+      ? analyzeCompose(last.compose).services.map((service) => service.name)
+      : null
+    const unknown = services && input.ports.find((port) => !services.includes(port.service))
+    if (unknown) {
+      return reply.code(400).send({
+        error: `Le service « ${unknown.service} » n’existe pas dans le dernier déploiement`,
+        field: 'service',
+      })
+    }
+
+    // Même port déjà ouvert par Vercio pour un autre environnement.
+    const others = await db
+      .select({ env: environments, project: projects })
+      .from(environments)
+      .innerJoin(projects, eq(projects.id, environments.projectId))
+      .where(ne(environments.id, params.envId))
+    for (const port of input.ports) {
+      const taken = others.find(({ env }) =>
+        ((env.publishedPorts as PublishedPortRule[]) ?? []).some(
+          (other) => other.published === port.published && other.protocol === port.protocol,
+        ),
+      )
+      if (taken) {
+        return reply.code(409).send({
+          error: `Le port ${port.published} est déjà ouvert pour ${taken.project.name} (${taken.env.name})`,
+          field: 'published',
+        })
+      }
+    }
+
+    await db
+      .update(environments)
+      .set({ publishedPorts: input.ports })
+      .where(eq(environments.id, params.envId))
+    await auditAction(db, request, 'environment.ports', `${found.project.slug}/${found.env.slug}`, {
+      ports: input.ports.map(
+        (port) => `${port.published}->${port.service}:${port.target}/${port.protocol}`,
+      ),
+    })
+    return projectView(params.id)
   })
 
   app.delete('/:id/environments/:envId', admin, async (request, reply) => {

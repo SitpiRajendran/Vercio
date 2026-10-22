@@ -302,4 +302,99 @@ describe.skipIf(!TEST_DATABASE_URL)('Réseaux partagés', () => {
     }
     expect(siteOverride.services.web!.environment).toBeUndefined()
   })
+  it('connecte un projet au service d’un autre en une fois, conteneurs branchés tout de suite', async () => {
+    const base = await createProject(
+      'base-liee',
+      'services:\n  postgres:\n    image: postgres:17\n',
+    )
+    const web = await createProject(
+      'web-lie',
+      'services:\n  api:\n    image: nginx\n  front:\n    image: nginx\n',
+    )
+    await deploy(base)
+    await deploy(web)
+    const running = (id: string, service: string, name: string) => ({
+      id,
+      name,
+      service,
+      image: 'x',
+      state: 'running',
+      status: 'Up',
+      health: null,
+      createdAt: new Date().toISOString(),
+      ports: [],
+    })
+    host.containers.set('vercio_base-liee_prod', [running('b'.repeat(12), 'postgres', 'base-pg')])
+    host.containers.set('vercio_web-lie_prod', [
+      running('a'.repeat(12), 'api', 'web-api'),
+      running('c'.repeat(12), 'front', 'web-front'),
+    ])
+    const env = web.environments[0]!
+    const link = (payload: object) =>
+      call('POST', `/projects/${web.id}/environments/${env.id}/links`, payload)
+
+    const own = await link({
+      targetEnvironmentId: env.id,
+      service: 'api',
+      alias: 'moi-meme',
+      services: null,
+    })
+    expect(own.statusCode).toBe(400)
+    const unknown = await link({
+      targetEnvironmentId: base.environments[0]!.id,
+      service: 'absent',
+      alias: 'base-db',
+      services: null,
+    })
+    expect(unknown.json()).toMatchObject({ field: 'service' })
+
+    const response = await link({
+      targetEnvironmentId: base.environments[0]!.id,
+      service: 'postgres',
+      alias: 'base-db',
+      services: ['api'],
+    })
+    expect(response.statusCode).toBe(201)
+    const result = response.json()
+    expect(result).toMatchObject({
+      applied: true,
+      detail: null,
+      network: {
+        alias: 'base-db',
+        exposedBy: { projectSlug: 'base-liee', service: 'postgres' },
+        subscribers: [{ projectSlug: 'web-lie', services: ['api'] }],
+      },
+    })
+    expect(host.connected.filter((item) => item.network === 'vercio-shared-base-db')).toEqual([
+      { network: 'vercio-shared-base-db', id: 'b'.repeat(12), aliases: ['base-db'] },
+      { network: 'vercio-shared-base-db', id: 'a'.repeat(12), aliases: [] },
+    ])
+
+    // Deuxième liaison au même service : le réseau existant est réutilisé, avec son nom.
+    const again = await link({
+      targetEnvironmentId: base.environments[0]!.id,
+      service: 'postgres',
+      alias: 'autre-nom',
+      services: null,
+    })
+    expect(again.json().network).toMatchObject({ id: result.network.id, alias: 'base-db' })
+    expect(again.json().network.subscribers).toEqual([
+      expect.objectContaining({ projectSlug: 'web-lie', services: null }),
+    ])
+    expect(
+      (
+        await call(
+          'POST',
+          `/projects/${web.id}/environments/${env.id}/links`,
+          {
+            targetEnvironmentId: base.environments[0]!.id,
+            service: 'postgres',
+            alias: 'base-db',
+            services: null,
+          },
+          'viewer',
+        )
+      ).statusCode,
+    ).toBe(403)
+  })
 })

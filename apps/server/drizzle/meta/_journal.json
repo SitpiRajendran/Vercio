@@ -120,6 +120,20 @@
       "when": 1792416637540,
       "tag": "0016_vercio_backup",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1792592804198,
+      "tag": "0017_totp_devices",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792603170473,
+      "tag": "0018_published_ports",
+      "breakpoints": true
     }
   ]
 }

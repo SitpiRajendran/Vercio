@@ -280,6 +280,7 @@ function EnvironmentDialog({
                     <Label className="text-muted-foreground text-xs">Version</Label>
                     <VersionPicker
                       projectId={project.id}
+                      project={project}
                       sourceId={source.source}
                       branch={source.branch}
                       value={source.ref}

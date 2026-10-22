@@ -77,6 +77,13 @@ import type {
   BackupRestoreInput,
   VercioBackupPage,
   VercioBackupPlanInput,
+  TotpDeviceAdd,
+  TotpDeviceView,
+  EnvironmentLinkInput,
+  EnvironmentLinkResult,
+  EnvironmentPortsInput,
+  UpdateStatus,
+  SystemInfo,
 } from '@vercio/shared'
 
 export interface CatalogGitProvider {
@@ -158,8 +165,22 @@ export const api = {
   initialPassword: (password: string) =>
     request<{ ok: true }>('/auth/password/initial', json('POST', { password })),
   changePassword: (body: ChangePassword) => request<void>('/auth/password', json('POST', body)),
+  totpDevices: {
+    list: () => request<TotpDeviceView[]>('/auth/totp/devices'),
+    setup: () => request<TotpSetup>('/auth/totp/devices/setup', json('POST')),
+    add: (body: TotpDeviceAdd) => request<TotpDeviceView>('/auth/totp/devices', json('POST', body)),
+    remove: (id: string, currentPassword: string) =>
+      request<void>(`/auth/totp/devices/${id}`, json('DELETE', { currentPassword })),
+  },
   logout: () => request<LogoutResult>('/auth/logout', { method: 'POST' }),
   dockerInfo: () => request<DockerInfo>('/system/docker'),
+  system: {
+    info: () => request<SystemInfo>('/system/info'),
+    update: () => request<UpdateStatus>('/system/update'),
+    checkUpdate: () => request<UpdateStatus>('/system/update/check', json('POST')),
+    startUpdate: (version: string) =>
+      request<UpdateStatus>('/system/update', json('POST', { version })),
+  },
   diskUsage: () => request<DiskUsageView[]>('/system/disk'),
   hostContainers: () => request<HostContainerView[]>('/system/containers'),
   cleanup: {
@@ -223,6 +244,8 @@ export const api = {
     appearance: (id: string, input: Partial<ProjectAppearance>) =>
       request<ProjectView>(`/projects/${id}/appearance`, json('PUT', input)),
     get: (slug: string) => request<ProjectView>(`/projects/${encodeURIComponent(slug)}`),
+    ports: (id: string, envId: string, input: EnvironmentPortsInput) =>
+      request<ProjectView>(`/projects/${id}/environments/${envId}/ports`, json('PUT', input)),
     create: (input: CreateProjectInput) => request<ProjectView>('/projects', json('POST', input)),
     update: (id: string, input: ProjectInput) =>
       request<ProjectView>(`/projects/${id}`, json('PUT', input)),
@@ -285,6 +308,10 @@ export const api = {
         `/projects/${projectId}/environments/${envId}/containers/${containerId}`,
       ),
     /** Adresse WebSocket du terminal (même origine que l'interface). */
+    terminalCheck: (projectId: string, envId: string, containerId: string) =>
+      request<{ publicOrigin: string; allowed: boolean; reason: string | null }>(
+        `/projects/${projectId}/environments/${envId}/containers/${containerId}/terminal/check`,
+      ),
     terminalUrl: (
       projectId: string,
       envId: string,
@@ -306,6 +333,11 @@ export const api = {
       request<{ docker: 'removed' | 'missing' | 'in_use' | 'error' }>(`/networks/${id}`, {
         method: 'DELETE',
       }),
+    link: (projectId: string, envId: string, input: EnvironmentLinkInput) =>
+      request<EnvironmentLinkResult>(
+        `/projects/${projectId}/environments/${envId}/links`,
+        json('POST', input),
+      ),
     subscribe: (projectId: string, envId: string, input: EnvironmentNetworksInput) =>
       request<SharedNetworkView[]>(
         `/projects/${projectId}/environments/${envId}/networks`,

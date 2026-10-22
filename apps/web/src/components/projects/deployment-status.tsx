@@ -50,6 +50,31 @@ export function deployedTags(deployment: DeploymentSummary): string {
   return tags.join(', ') || 'images fixes'
 }
 
+/**
+ * Ce qui a été déployé, précisément : le commit (ou le tag de version) derrière un tag mobile
+ * comme `prod`, quand il est connu ; sinon le tag.
+ */
+export function deployedVersions(deployment: DeploymentSummary): string {
+  const names = [
+    ...new Set(Object.values(deployment.versions).map((version) => version.version ?? version.tag)),
+  ]
+  return names.join(', ') || 'images fixes'
+}
+
+/** `prod (e8193b2f)` : le tag et le commit qu'il désignait au déploiement. */
+export function deployedLabel(deployment: DeploymentSummary): string {
+  const labels = [
+    ...new Set(
+      Object.values(deployment.versions).map((version) =>
+        version.version && version.version !== version.tag
+          ? `${version.tag} (${version.version})`
+          : version.tag,
+      ),
+    ),
+  ]
+  return labels.join(', ') || 'images fixes'
+}
+
 export function duration(deployment: DeploymentSummary): string | null {
   if (!deployment.startedAt || !deployment.finishedAt) return null
   const seconds = Math.round(

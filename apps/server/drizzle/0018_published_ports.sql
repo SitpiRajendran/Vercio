@@ -1,0 +1,1 @@
+ALTER TABLE "environments" ADD COLUMN "published_ports" jsonb DEFAULT '[]'::jsonb NOT NULL;

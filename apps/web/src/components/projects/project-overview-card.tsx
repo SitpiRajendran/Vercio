@@ -102,7 +102,11 @@ export function EnvironmentPills({
   )
 }
 
-/** Mettre à jour, redémarrer, arrêter (ou démarrer) un environnement. */
+/**
+ * Boutons selon l'état de l'environnement : jamais déployé (ou sans conteneur) → « Déployer » ;
+ * arrêté → « Démarrer » et « Mettre à jour » ; en marche → « Mettre à jour », « Redémarrer »,
+ * « Arrêter ».
+ */
 export function EnvironmentActions({
   target,
   env,
@@ -129,54 +133,60 @@ export function EnvironmentActions({
   if (!workbench.canDeploy) return open || null
   const deploying =
     env.lastDeployment?.status === 'queued' || env.lastDeployment?.status === 'running'
+  const hasContainers = env.containers.length > 0
   const anyRunning = env.containers.some((container) => container.state === 'running')
+  const stopped = hasContainers && !anyRunning
   const whole = actions.pending && !actions.pending.service ? actions.pending.action : null
+  const disabled = actions.busy || deploying
+
+  const deploy = (
+    <Button
+      size="sm"
+      variant={stopped ? 'outline' : 'default'}
+      onClick={() => workbench.openDeploy(target)}
+    >
+      {deploying ? <Loader2 className="animate-spin" /> : <Rocket />}
+      {deploying ? 'Déploiement…' : hasContainers ? 'Mettre à jour' : 'Déployer'}
+    </Button>
+  )
   return (
     <div className="flex flex-wrap items-center gap-2">
       {open}
-      <Button size="sm" onClick={() => workbench.openDeploy(target)}>
-        {deploying ? <Loader2 className="animate-spin" /> : <Rocket />}
-        {deploying ? 'Déploiement…' : 'Mettre à jour'}
-      </Button>
-      {env.containers.length > 0 && (
+      {stopped && (
+        <Button
+          size="sm"
+          disabled={disabled}
+          onClick={() => actions.run('start')}
+          aria-label="Démarrer"
+        >
+          {whole === 'start' ? <Loader2 className="animate-spin" /> : <Play />}
+          {!compact && 'Démarrer'}
+        </Button>
+      )}
+      {deploy}
+      {anyRunning && (
         <>
-          {/* Tout est arrêté : rien à redémarrer, seul « Démarrer » a un sens. */}
-          {anyRunning && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={actions.busy || deploying}
-              onClick={() => actions.run('restart')}
-              aria-label="Redémarrer"
-            >
-              {whole === 'restart' ? <Loader2 className="animate-spin" /> : <RotateCw />}
-              {!compact && 'Redémarrer'}
-            </Button>
-          )}
-          {anyRunning ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-destructive hover:text-destructive"
-              disabled={actions.busy || deploying}
-              onClick={() => actions.run('stop')}
-              aria-label="Arrêter"
-            >
-              <Square />
-              {!compact && 'Arrêter'}
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={actions.busy || deploying}
-              onClick={() => actions.run('start')}
-              aria-label="Démarrer"
-            >
-              {whole === 'start' ? <Loader2 className="animate-spin" /> : <Play />}
-              {!compact && 'Démarrer'}
-            </Button>
-          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => actions.run('restart')}
+            aria-label="Redémarrer"
+          >
+            {whole === 'restart' ? <Loader2 className="animate-spin" /> : <RotateCw />}
+            {!compact && 'Redémarrer'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            disabled={disabled}
+            onClick={() => actions.run('stop')}
+            aria-label="Arrêter"
+          >
+            <Square />
+            {!compact && 'Arrêter'}
+          </Button>
         </>
       )}
     </div>
@@ -328,7 +338,7 @@ function CardBody({
         />
       ) : (
         <p className="text-muted-foreground rounded-lg border border-dashed py-4 text-center text-sm">
-          {env.current ? 'Aucun conteneur.' : 'Jamais déployé : cliquez sur « Mettre à jour ».'}
+          {env.current ? 'Aucun conteneur.' : 'Jamais déployé : cliquez sur « Déployer ».'}
         </p>
       )}
       {actions.dialog}

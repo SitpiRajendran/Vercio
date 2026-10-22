@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   composeProjectName,
   isVersionTag,
+  suggestTagConvention,
   channelTag,
   commitImageTag,
   latestTagForBranch,
@@ -100,5 +101,43 @@ describe('Convention de tags', () => {
     expect(commitImageTag('{sha:8}', sha)).toBe('d4f61051')
     expect(commitImageTag('sha-{sha:7}', sha)).toBe('sha-d4f6105')
     expect(commitImageTag('{sha}', sha)).toBe(sha)
+  })
+})
+
+describe('suggestTagConvention', () => {
+  const base = {
+    branch: 'prod',
+    latestAvailable: false,
+    versionSource: 'git_tags' as const,
+    hasVersions: false,
+  }
+
+  it('reconnaît un tag au nom de la branche et des images par commit', () => {
+    expect(
+      suggestTagConvention({ ...base, registryTags: ['prod', 'e8193b2f', 'ced8fb81'] }),
+    ).toEqual({
+      latest: { tag: 'prod', template: '{branch}' },
+      commits: { template: '{sha:8}', example: 'e8193b2f' },
+    })
+  })
+
+  it('reprend un tag mobile unique, et le SHA complet', () => {
+    const sha = 'a'.repeat(40)
+    expect(suggestTagConvention({ ...base, registryTags: ['stable', 'v1.2.0', sha] })).toEqual({
+      latest: { tag: 'stable', template: 'stable' },
+      commits: { template: '{sha}', example: sha },
+    })
+  })
+
+  it('ne propose rien quand tout est trouvé ou quand rien ne correspond', () => {
+    expect(
+      suggestTagConvention({
+        ...base,
+        latestAvailable: true,
+        hasVersions: true,
+        registryTags: ['prod'],
+      }),
+    ).toBeNull()
+    expect(suggestTagConvention({ ...base, registryTags: ['a', 'b'] })).toBeNull()
   })
 })

@@ -271,8 +271,9 @@ export const containerRoutes: FastifyPluginAsync<{
     if (!found) return reply.code(404).send({ error: 'Environnement introuvable' })
     let running: ContainerView[]
     try {
+      // Relais de Vercio (nginx) : pas un service du projet, rien à surveiller.
       running = (await host.listContainers(found.name)).filter(
-        (container) => container.state === 'running',
+        (container) => container.state === 'running' && !container.relayFor,
       )
     } catch (error) {
       return reply.code(502).send({ error: dockerError(error) })
@@ -373,6 +374,30 @@ export const containerRoutes: FastifyPluginAsync<{
       return reply.code(403).send({ error: 'Terminal non autorisé pour votre rôle' })
     }
   }
+
+  /**
+   * Diagnostic d'un terminal qui ne s'ouvre pas : le navigateur ne donne jamais la raison d'un
+   * WebSocket refusé. Même vérifications que `terminalGuard`, en JSON ; l'origine attendue est
+   * renvoyée pour que l'interface la compare à l'adresse ouverte dans le navigateur.
+   */
+  app.get(`${base}/containers/:containerId/terminal/check`, viewer, async (request) => {
+    const result = { publicOrigin, allowed: true, reason: null as string | null }
+    if (!(await canUseTerminal(request.user!.roles))) {
+      return { ...result, allowed: false, reason: 'Terminal non autorisé pour votre rôle' }
+    }
+    const params = containerParams.safeParse(request.params)
+    const found = params.success && (await findEnvironment(params.data.id, params.data.envId))
+    if (!params.success || !found) return { ...result, allowed: false, reason: 'Introuvable' }
+    try {
+      const container = await findContainer(found.name, params.data.containerId)
+      if (container?.state !== 'running') {
+        return { ...result, allowed: false, reason: 'Le conteneur n’est pas en marche' }
+      }
+    } catch (error) {
+      return { ...result, allowed: false, reason: dockerError(error) }
+    }
+    return result
+  })
 
   const terminalQuery = z.object({
     shell: z.enum(TERMINAL_SHELLS).default('auto'),

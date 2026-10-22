@@ -145,6 +145,35 @@ export interface HostDriver {
   networks(names: string[]): Promise<Map<string, NetworkState>>
   /** Supprime un réseau ; `in_use` si des conteneurs y sont encore attachés. */
   removeNetwork(name: string): Promise<'removed' | 'missing' | 'in_use'>
+  /**
+   * Branche des conteneurs en marche sur un réseau partagé (créé s'il manque), sans attendre
+   * leur prochain déploiement ; `aliases` : noms DNS du conteneur sur ce réseau.
+   */
+  connectNetwork(name: string, containers: { id: string; aliases: string[] }[]): Promise<void>
+  /** Conteneur de Vercio lui-même (nom d'hôte du processus) ; null hors conteneur. */
+  selfContainer(): Promise<SelfContainer | null>
+  /**
+   * Lance un conteneur indépendant de Vercio (supprimé à sa fin), image téléchargée au besoin.
+   * Sert à la mise à jour de Vercio : le conteneur survit au remplacement de celui de Vercio.
+   */
+  runDetached(options: DetachedRun): Promise<string>
+}
+
+export interface SelfContainer {
+  id: string
+  image: string
+  labels: Record<string, string>
+  /** Montages : chemin sur l'hôte → chemin dans le conteneur. */
+  mounts: { source: string; destination: string }[]
+}
+
+export interface DetachedRun {
+  image: string
+  command: string[]
+  env: Record<string, string>
+  /** `hôte:conteneur[:ro]` */
+  binds: string[]
+  labels: Record<string, string>
 }
 
 export interface NetworkState {

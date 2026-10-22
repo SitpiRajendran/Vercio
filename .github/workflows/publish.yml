@@ -98,8 +98,24 @@ jobs:
             org.opencontainers.image.version=${{ needs.commit.outputs.version }}
             org.opencontainers.image.licenses=AGPL-3.0-only
           build-args: VERCIO_VERSION=${{ needs.commit.outputs.version }}
+          # Sans attestation de provenance : deux « versions » de moins par image dans ghcr.
+          provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Entrées sans tag laissées par les versions précédentes ; les images par architecture d'une
+  # version taguée sont gardées. Un échec n'empêche pas la release.
+  cleanup:
+    needs: image
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      packages: write
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: vercio
+          delete-untagged: true
 
   release:
     needs: [commit, image]

@@ -1,6 +1,7 @@
 import { parse } from 'yaml'
 import type { ComposeAnalysis, ComposeServiceInfo } from '@vercio/shared'
 import { zeroDowntimeEligibility } from '../deploy/zero-downtime.js'
+import { COMPOSE_YAML } from './yaml.js'
 
 type Mapping = Record<string, unknown>
 
@@ -14,7 +15,7 @@ const isMapping = (value: unknown): value is Mapping =>
 export function analyzeCompose(content: string): ComposeAnalysis {
   let document: unknown
   try {
-    document = parse(content, { maxAliasCount: 100 })
+    document = parse(content, COMPOSE_YAML)
   } catch (error) {
     const message = error instanceof Error ? error.message.split('\n')[0] : String(error)
     return { services: [], error: `YAML invalide : ${message}`, warnings: [] }

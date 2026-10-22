@@ -71,9 +71,6 @@ export const users = pgTable(
     displayName: text('display_name').notNull(),
     email: text('email'),
     passwordHash: text('password_hash'),
-    totpSecretEnc: text('totp_secret_enc'),
-    /** Dernier pas TOTP accepté : empêche de rejouer un code déjà utilisé. */
-    totpLastStep: integer('totp_last_step'),
     /** Mot de passe temporaire (création, réinitialisation) : à changer à la prochaine connexion. */
     passwordChangeRequired: boolean('password_change_required').notNull().default(false),
     roles: text('roles')
@@ -86,6 +83,24 @@ export const users = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex('users_provider_subject_idx').on(t.provider, t.subject)],
+)
+
+/** Applications d'authentification (TOTP) d'un compte local : une au moins une fois enrôlé. */
+export const totpDevices = pgTable(
+  'totp_devices',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    secretEnc: text('secret_enc').notNull(),
+    /** Dernier pas accepté : empêche de rejouer un code déjà utilisé. */
+    lastStep: integer('last_step'),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('totp_devices_user_idx').on(t.userId)],
 )
 
 export const sessions = pgTable(
@@ -248,6 +263,8 @@ export const environments = pgTable(
     migratingFrom: text('migrating_from'),
     /** Volume du fichier Compose → volume Docker existant réutilisé (projet repris). */
     volumeMap: jsonb('volume_map').notNull().default({}),
+    /** Ports ouverts sur l'hôte par Vercio, en plus de ceux du fichier Compose. */
+    publishedPorts: jsonb('published_ports').notNull().default([]),
     /** Liste d'IP / CIDR autorisées pour les webhooks (vide = liste globale). */
     webhookIpAllowlist: text('webhook_ip_allowlist')
       .array()
