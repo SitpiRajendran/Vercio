@@ -3863,9 +3863,9 @@ packages:
     peerDependencies:
       seroval: ^1.0
 
-  seroval@1.6.9:
-    resolution: {integrity: sha512-UeEzHwAK+yl0YLbsvROV1t5yMYEwZZ0CfKYxDvUgS2fO9Vxdf8djqVIB+OuVpuawRNPqw68LE1Du/GMsW2ZPqA==}
-    engines: {node: '>=10'}
+  seroval@1.8.0:
+    resolution: {integrity: sha512-W5N4cMPc58lypAsScCmhGTyZxNZ6gPHvLHtMqtyvDFpfyNDsH1QjU0nI9Lr34+Q5ZLPsWeqOhkgTY5XtaPVQ4A==}
+    engines: {node: '>=20'}
 
   set-blocking@2.0.0:
     resolution: {integrity: sha512-KiKBS8AnWGEyLzofFfmvKwpdPzqiy16LvQfK3yv/fVH7Bj13/wl3JSR1J+rfgRE9q7xUJK4qvgS8raSOeLUehw==}
@@ -6182,8 +6182,8 @@ snapshots:
     dependencies:
       '@tanstack/history': 1.162.5
       cookie-es: 3.1.1
-      seroval: 1.6.9
-      seroval-plugins: 1.6.9(seroval@1.6.9)
+      seroval: 1.8.0
+      seroval-plugins: 1.6.9(seroval@1.8.0)
 
   '@tanstack/store@0.11.2': {}
 
@@ -7621,11 +7621,11 @@ snapshots:
 
   semver@7.8.5: {}
 
-  seroval-plugins@1.6.9(seroval@1.6.9):
+  seroval-plugins@1.6.9(seroval@1.8.0):
     dependencies:
-      seroval: 1.6.9
+      seroval: 1.8.0
 
-  seroval@1.6.9: {}
+  seroval@1.8.0: {}
 
   set-blocking@2.0.0: {}
 
