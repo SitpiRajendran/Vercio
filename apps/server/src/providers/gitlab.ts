@@ -196,6 +196,13 @@ export class GitLabClient {
     }))
   }
 
+  async commitDetails(repository: string, sha: string): Promise<Partial<GitTag>> {
+    const commit = await this.get<{ title: string; author_name: string; committed_date: string }>(
+      `/projects/${encodeURIComponent(repository)}/repository/commits/${encodeURIComponent(sha)}`,
+    )
+    return { message: commit.title, author: commit.author_name, date: commit.committed_date }
+  }
+
   async isCommitOnBranch(repository: string, sha: string, branch: string): Promise<boolean> {
     const refs = await this.get<{ name: string }[]>(
       `/projects/${encodeURIComponent(repository)}/repository/commits/${sha}/refs?type=branch&per_page=100`,
@@ -205,6 +212,13 @@ export class GitLabClient {
 
   commitUrl(repository: string, sha: string): string {
     return `${this.settings.url}/${repository}/-/commit/${sha}`
+  }
+
+  async lastSuccessfulBuild(repository: string, ref: string): Promise<string | null> {
+    const pipelines = await this.get<{ sha: string }[]>(
+      `/projects/${encodeURIComponent(repository)}/pipelines?ref=${encodeURIComponent(ref)}&status=success&per_page=1`,
+    )
+    return pipelines[0]?.sha ?? null
   }
 
   pipelineUrl(repository: string, ref: string): string {

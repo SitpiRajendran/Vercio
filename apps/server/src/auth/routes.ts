@@ -8,24 +8,30 @@ import {
   initialPasswordSchema,
   localLoginSchema,
   MAX_TOTP_DEVICES,
+  recoveryCodeSchema,
+  recoveryCodesRegenerateSchema,
   totpCodeSchema,
   totpDeviceAddSchema,
   totpDeviceRemoveSchema,
   type AuthConfig,
   type LocalLoginResult,
   type LogoutResult,
+  type RecoveryCodesIssued,
+  type RecoveryCodesStatus,
   type SsoError,
   type TotpDeviceView,
   type TotpSetup,
   type TotpVerifyResult,
 } from '@vercio/shared'
 import type { Database } from '../db/client.js'
-import { sessions as sessionsTable, totpDevices, users } from '../db/schema.js'
+import { sessions as sessionsTable, totpDevices, totpRecoveryCodes, users } from '../db/schema.js'
 import { audit } from '../lib/audit.js'
 import { hashToken, randomToken, type SecretBox } from '../lib/crypto.js'
 import { hashPassword, verifyPassword } from '../lib/password.js'
-import { generateTotpSecret, totpUri, verifyTotp } from '../lib/totp.js'
-import type { OidcService, PendingLogin } from './oidc.js'
+import { generateRecoveryCodes, hashRecoveryCode } from '../lib/recovery-codes.js'
+import { generateTotpSecret, totpClockOffset, totpUri, verifyTotp } from '../lib/totp.js'
+import type { PendingLogin } from './oidc.js'
+import type { SsoManager } from './sso.js'
 import { SealedCookie } from './sealed-cookie.js'
 import { sessionCookieName, type SessionStore } from './sessions.js'
 
@@ -37,8 +43,8 @@ export interface AuthRoutesOptions {
   localEnabled: boolean
   /** Code de la page de premier lancement (voir bootstrap.setupCode). */
   setupCode: string
-  oidc: OidcService | null
-  oidcProviderName: string
+  /** SSO en service (.env ou interface), relu à chaque requête : changeable à chaud. */
+  sso: SsoManager
 }
 
 /**
@@ -72,14 +78,46 @@ const TOTP_LOCK_MS = 15 * 60_000
 const totpFailures = new Map<string, { count: number; since: number }>()
 
 export function totpLocked(userId: string): boolean {
-  const entry = totpFailures.get(userId)
-  if (!entry) return false
-  if (Date.now() - entry.since > TOTP_LOCK_MS) {
-    totpFailures.delete(userId)
-    return false
-  }
-  return entry.count >= TOTP_MAX_FAILURES
+  return totpLockRemaining(userId) > 0
 }
+
+/** Temps restant avant de pouvoir réessayer (ms), 0 si le compte n'est pas bloqué. */
+export function totpLockRemaining(userId: string): number {
+  const entry = totpFailures.get(userId)
+  if (!entry) return 0
+  const elapsed = Date.now() - entry.since
+  if (elapsed > TOTP_LOCK_MS) {
+    totpFailures.delete(userId)
+    return 0
+  }
+  return entry.count >= TOTP_MAX_FAILURES ? TOTP_LOCK_MS - elapsed : 0
+}
+
+/** Message du blocage, avec l'heure à laquelle réessayer. */
+export function totpLockMessage(userId: string): string {
+  const minutes = Math.max(1, Math.ceil(totpLockRemaining(userId) / 60_000))
+  return `Trop de codes refusés : réessayez dans ${minutes} min (ou redémarrez Vercio pour lever le blocage tout de suite)`
+}
+
+/**
+ * Explique un code refusé : un code d'une heure éloignée (horloge décalée) est signalé comme
+ * tel au lieu d'un « code invalide » qui laisse penser à une erreur de saisie.
+ */
+function invalidCodeMessage(offsetSeconds: number | null): string {
+  if (offsetSeconds === null) return 'Code invalide'
+  const minutes = Math.round(Math.abs(offsetSeconds) / 60)
+  const amount = minutes >= 1 ? `${minutes} min` : `${Math.abs(offsetSeconds)} s`
+  return `Code refusé : l’heure du serveur et celle de votre application diffèrent d’environ ${amount}. Synchronisez l’horloge du serveur (NTP) ou celle de votre téléphone.`
+}
+
+/** Résultat de la vérification d'un code : accepté, déjà utilisé, ou refusé (avec décalage). */
+type CodeCheck =
+  | { status: 'ok'; step: number }
+  | { status: 'reused' }
+  | { status: 'invalid'; offsetSeconds: number | null }
+
+const REUSED_MESSAGE =
+  'Ce code vient déjà d’être utilisé : attendez que votre application en affiche un nouveau'
 
 export function totpFailed(userId: string): void {
   const entry = totpFailures.get(userId)
@@ -91,7 +129,7 @@ export function totpFailed(userId: string): void {
 }
 
 export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opts) => {
-  const { db, sessions, box, publicUrl, localEnabled, setupCode, oidc, oidcProviderName } = opts
+  const { db, sessions, box, publicUrl, localEnabled, setupCode, sso } = opts
   const secure = publicUrl.protocol === 'https:'
   const sessionCookie = sessionCookieName(secure)
   // `__Secure-` en HTTPS : le navigateur refuse qu'un domaine voisin pose ces cookies.
@@ -149,8 +187,8 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
   app.get('/config', async (): Promise<AuthConfig> => ({
     localEnabled,
     setupRequired: localEnabled && (await noLocalAccount()),
-    oidcEnabled: oidc !== null,
-    oidcProviderName: oidc ? oidcProviderName : null,
+    oidcEnabled: sso.current() !== null,
+    oidcProviderName: sso.current()?.providerName ?? null,
   }))
 
   async function deviceCount(userId: string, executor: Pick<Database, 'select'> = db) {
@@ -164,15 +202,18 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
   /**
    * Code d'une des applications du compte. Mise à jour conditionnelle du dernier pas : deux
    * requêtes simultanées avec le même code (relais de phishing) n'en valident qu'une.
-   * `null` : aucun code valide ; `false` : code valide mais déjà utilisé.
    */
-  async function checkDeviceCode(userId: string, code: string): Promise<boolean | null> {
+  async function checkDeviceCode(userId: string, code: string): Promise<CodeCheck> {
     const devices = await db.select().from(totpDevices).where(eq(totpDevices.userId, userId))
+    let offsetSeconds: number | null = null
     for (const device of devices) {
-      const step = verifyTotp(box.decrypt(device.secretEnc), code, {
-        lastUsedStep: device.lastStep,
-      })
-      if (step === null) continue
+      const secret = box.decrypt(device.secretEnc)
+      const step = verifyTotp(secret, code)
+      if (step === null) {
+        offsetSeconds ??= totpClockOffset(secret, code)
+        continue
+      }
+      if (device.lastStep !== null && step <= device.lastStep) return { status: 'reused' }
       const [accepted] = await db
         .update(totpDevices)
         .set({ lastStep: step, lastUsedAt: new Date() })
@@ -183,9 +224,9 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
           ),
         )
         .returning({ id: totpDevices.id })
-      return Boolean(accepted)
+      return accepted ? { status: 'ok', step } : { status: 'reused' }
     }
-    return null
+    return { status: 'invalid', offsetSeconds }
   }
 
   /** Première application, à la connexion : une seule, même si deux codes arrivent ensemble. */
@@ -292,7 +333,9 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     const [user] = await db.select().from(users).where(eq(users.id, ticket.userId)).limit(1)
     if (!user) return reply.code(401).send({ error: 'Session de connexion expirée' })
 
-    const secret = generateTotpSecret()
+    // Même clé si l'écran est redemandé (double appel, retour sur la page) : le QR code déjà
+    // scanné reste valable, et la clé affichée correspond toujours à celle attendue.
+    const secret = ticket.pendingSecret ?? generateTotpSecret()
     mfaCookie.set(reply, { ...ticket, pendingSecret: secret })
     const uri = totpUri(secret, user.username)
     const result: TotpSetup = {
@@ -315,26 +358,35 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     if (!user || user.disabled)
       return reply.code(401).send({ error: 'Session de connexion expirée' })
     if (totpLocked(user.id)) {
-      return reply
-        .code(429)
-        .send({ error: 'Trop de codes invalides : réessayez dans quelques minutes' })
+      return reply.code(429).send({ error: totpLockMessage(user.id) })
     }
 
-    let valid: boolean | null
+    let check: CodeCheck
     if (ticket.stage === 'setup') {
       if (!ticket.pendingSecret) {
         return reply.code(400).send({ error: 'Enrôlement TOTP non démarré' })
       }
       const step = verifyTotp(ticket.pendingSecret, parsed.data.code)
-      valid =
-        step === null
-          ? null
-          : await enrollFirstDevice(user.id, box.encrypt(ticket.pendingSecret), step)
+      if (step === null) {
+        check = {
+          status: 'invalid',
+          offsetSeconds: totpClockOffset(ticket.pendingSecret, parsed.data.code),
+        }
+      } else {
+        const enrolled = await enrollFirstDevice(user.id, box.encrypt(ticket.pendingSecret), step)
+        check = enrolled ? { status: 'ok', step } : { status: 'reused' }
+      }
     } else {
-      valid = await checkDeviceCode(user.id, parsed.data.code)
+      check = await checkDeviceCode(user.id, parsed.data.code)
     }
-    if (valid === null) {
+    if (check.status === 'invalid') {
       totpFailed(user.id)
+      if (check.offsetSeconds !== null) {
+        request.log.warn(
+          { offsetSeconds: check.offsetSeconds },
+          'Code TOTP valide pour une autre heure : horloge du serveur ou du téléphone décalée',
+        )
+      }
       await audit(db, {
         userId: user.id,
         username: user.username,
@@ -342,11 +394,15 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
         ip: request.ip,
         success: false,
       })
-      return reply.code(401).send({ error: 'Code invalide' })
+      if (totpLocked(user.id)) return reply.code(429).send({ error: totpLockMessage(user.id) })
+      return reply.code(401).send({ error: invalidCodeMessage(check.offsetSeconds) })
     }
-    if (!valid) return reply.code(401).send({ error: 'Code invalide' })
+    if (check.status === 'reused') return reply.code(401).send({ error: REUSED_MESSAGE })
     totpFailures.delete(user.id)
+    let recoveryCodes: string[] | undefined
     if (ticket.stage === 'setup') {
+      // Codes de secours avec la première application : affichés une seule fois.
+      recoveryCodes = await issueRecoveryCodes(user.id)
       await audit(db, {
         userId: user.id,
         username: user.username,
@@ -355,17 +411,103 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
         success: true,
       })
     }
+    return finishSecondFactor(request, reply, user, { recoveryCodes })
+  })
 
+  /** Double authentification réussie : session ouverte, ou mot de passe temporaire à remplacer. */
+  async function finishSecondFactor(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    user: typeof users.$inferSelect,
+    extra: Omit<TotpVerifyResult, 'next'>,
+  ): Promise<TotpVerifyResult> {
     // Mot de passe temporaire : la session n'est ouverte qu'une fois remplacé.
     if (user.passwordChangeRequired) {
       mfaCookie.set(reply, { userId: user.id, stage: 'password' })
-      const result: TotpVerifyResult = { next: 'password_change' }
-      return result
+      return { next: 'password_change', ...extra }
     }
     mfaCookie.clear(reply)
     await openSession(request, reply, user)
-    const result: TotpVerifyResult = { next: 'done' }
-    return result
+    return { next: 'done', ...extra }
+  }
+
+  /** Nouveaux codes de secours : les anciens ne fonctionnent plus. Renvoie les codes en clair. */
+  async function issueRecoveryCodes(userId: string): Promise<string[]> {
+    const codes = generateRecoveryCodes()
+    await db.transaction(async (tx) => {
+      await tx.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.userId, userId))
+      await tx
+        .insert(totpRecoveryCodes)
+        .values(codes.map((code) => ({ userId, codeHash: hashRecoveryCode(code) })))
+    })
+    return codes
+  }
+
+  async function recoveryStatus(userId: string): Promise<RecoveryCodesStatus> {
+    const [row] = await db
+      .select({
+        total: sql<number>`count(*)::int`,
+        remaining: sql<number>`count(*) filter (where ${totpRecoveryCodes.usedAt} is null)::int`,
+        createdAt: sql<Date | null>`min(${totpRecoveryCodes.createdAt})`,
+      })
+      .from(totpRecoveryCodes)
+      .where(eq(totpRecoveryCodes.userId, userId))
+    const createdAt = row?.createdAt ? new Date(row.createdAt).toISOString() : null
+    return { total: row?.total ?? 0, remaining: row?.remaining ?? 0, createdAt }
+  }
+
+  /**
+   * Connexion avec un code de secours, à la place du code TOTP. Usage unique (mise à jour
+   * conditionnelle) ; les échecs comptent dans la même limite que les codes TOTP.
+   */
+  app.post('/totp/recovery/verify', { config: LOGIN_RATE_LIMIT }, async (request, reply) => {
+    const ticket = mfaCookie.get(request)
+    if (!ticket || ticket.stage === 'password') {
+      return reply.code(401).send({ error: 'Session de connexion expirée' })
+    }
+    const parsed = recoveryCodeSchema.safeParse(request.body)
+    if (!parsed.success) return reply.code(400).send({ error: 'Code de secours attendu' })
+    const [user] = await db.select().from(users).where(eq(users.id, ticket.userId)).limit(1)
+    if (!user || user.disabled) {
+      return reply.code(401).send({ error: 'Session de connexion expirée' })
+    }
+    if (totpLocked(user.id)) return reply.code(429).send({ error: totpLockMessage(user.id) })
+
+    const [used] = await db
+      .update(totpRecoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(totpRecoveryCodes.userId, user.id),
+          eq(totpRecoveryCodes.codeHash, hashRecoveryCode(parsed.data.code)),
+          isNull(totpRecoveryCodes.usedAt),
+        ),
+      )
+      .returning({ id: totpRecoveryCodes.id })
+    if (!used) {
+      totpFailed(user.id)
+      await audit(db, {
+        userId: user.id,
+        username: user.username,
+        action: 'auth.recovery',
+        ip: request.ip,
+        success: false,
+      })
+      if (totpLocked(user.id)) return reply.code(429).send({ error: totpLockMessage(user.id) })
+      return reply.code(401).send({ error: 'Code de secours invalide ou déjà utilisé' })
+    }
+    totpFailures.delete(user.id)
+    await audit(db, {
+      userId: user.id,
+      username: user.username,
+      action: 'auth.recovery',
+      ip: request.ip,
+      success: true,
+    })
+    // Pas d'application enregistrée (réinitialisée) : elle sera reconfigurée à la prochaine
+    // connexion ; le code de secours suffit pour celle-ci.
+    const { remaining } = await recoveryStatus(user.id)
+    return finishSecondFactor(request, reply, user, { recoveryRemaining: remaining })
   })
 
   app.post('/password/initial', { config: LOGIN_RATE_LIMIT }, async (request, reply) => {
@@ -500,6 +642,37 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     return true
   }
 
+  app.get('/totp/recovery', async (request, reply) => {
+    if (!requireLocalUser(request, reply)) return
+    return recoveryStatus(request.user!.id)
+  })
+
+  app.post('/totp/recovery', { config: LOGIN_RATE_LIMIT }, async (request, reply) => {
+    if (!requireLocalUser(request, reply)) return
+    const parsed = recoveryCodesRegenerateSchema.safeParse(request.body)
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]
+      return reply.code(400).send({ error: issue?.message, field: issue?.path.join('.') })
+    }
+    const user = await confirmLocalUser(
+      request,
+      reply,
+      parsed.data.currentPassword,
+      'auth.recovery.regenerate',
+    )
+    if (!user) return
+    const codes = await issueRecoveryCodes(user.id)
+    await audit(db, {
+      userId: user.id,
+      username: user.username,
+      action: 'auth.recovery.regenerate',
+      ip: request.ip,
+      success: true,
+    })
+    const result: RecoveryCodesIssued = { codes }
+    return result
+  })
+
   app.get('/totp/devices', async (request, reply) => {
     if (!requireLocalUser(request, reply)) return
     const rows = await db
@@ -553,14 +726,13 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     )
     if (!user) return
     if (totpLocked(user.id)) {
-      return reply
-        .code(429)
-        .send({ error: 'Trop de codes invalides : réessayez dans quelques minutes' })
+      return reply.code(429).send({ error: totpLockMessage(user.id) })
     }
     const step = verifyTotp(pending.secret, parsed.data.code)
     if (step === null) {
       totpFailed(user.id)
-      return reply.code(400).send({ error: 'Code invalide', field: 'code' })
+      const message = invalidCodeMessage(totpClockOffset(pending.secret, parsed.data.code))
+      return reply.code(400).send({ error: message, field: 'code' })
     }
     const added = await db.transaction(async (tx) => {
       await tx.execute(sql`select id from users where id = ${user.id} for update`)
@@ -651,6 +823,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
   }
 
   app.get('/oidc/login', async (request, reply) => {
+    const oidc = sso.current()?.service
     if (!oidc) return reply.code(404).send({ error: 'SSO non configuré' })
     try {
       const { url, pending } = await oidc.startLogin()
@@ -663,6 +836,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
   })
 
   app.get('/oidc/callback', async (request, reply) => {
+    const oidc = sso.current()?.service
     if (!oidc) return reply.code(404).send({ error: 'SSO non configuré' })
     const pending = oidcCookie.get(request)
     oidcCookie.clear(reply)
@@ -724,6 +898,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
       (_request, body, done) => done(null, Object.fromEntries(new URLSearchParams(body as string))),
     )
     backchannel.post('/oidc/backchannel-logout', async (request, reply) => {
+      const oidc = sso.current()?.service
       if (!oidc) return reply.code(404).send({ error: 'SSO non configuré' })
       const token = (request.body as Record<string, string> | undefined)?.logout_token
       if (!token) return reply.code(400).send({ error: 'logout_token manquant' })
@@ -755,6 +930,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     if (token) {
       const session = await sessions.find(token)
       await sessions.destroy(token)
+      const oidc = sso.current()?.service
       if (session?.idTokenEnc && oidc) {
         try {
           redirectTo = await oidc.endSessionUrl(box.decrypt(session.idTokenEnc))
@@ -763,7 +939,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
         }
       }
     }
-    reply.clearCookie(sessionCookie, { path: '/' })
+    reply.clearCookie(sessionCookie, { path: '/', httpOnly: true, secure, sameSite: 'lax' })
     return { redirectTo }
   })
 }

@@ -8,7 +8,7 @@ import websocket from '@fastify/websocket'
 import Fastify, { type FastifyServerOptions } from 'fastify'
 import { authPlugin } from './auth/plugin.js'
 import { ensureLocalAdmin, setupCode } from './bootstrap.js'
-import { OidcService } from './auth/oidc.js'
+import { SsoManager } from './auth/sso.js'
 import { authRoutes } from './auth/routes.js'
 import { SessionStore } from './auth/sessions.js'
 import type { Config } from './config.js'
@@ -31,6 +31,7 @@ import { NotificationService } from './notifications/service.js'
 import { catalogRoutes } from './routes/catalog.js'
 import { projectRoutes } from './routes/projects.js'
 import { notificationRoutes } from './routes/notifications.js'
+import { ssoRoutes } from './routes/sso.js'
 import { settingsRoutes } from './routes/settings.js'
 import { containerRoutes } from './routes/containers.js'
 import { deploymentRoutes } from './routes/deployments.js'
@@ -166,18 +167,22 @@ export async function buildApp({
   const firstRunCode = await setupCode(db, config, app.log)
   app.decorate('deployments', engine)
   const webhooks = new WebhookService(db, box, engine, versions, app.log, notifications)
-  const oidc =
-    config.OIDC_ISSUER && config.OIDC_CLIENT_ID && config.OIDC_CLIENT_SECRET
-      ? new OidcService({
-          issuer: config.OIDC_ISSUER,
-          clientId: config.OIDC_CLIENT_ID,
-          clientSecret: config.OIDC_CLIENT_SECRET,
-          scopes: config.OIDC_SCOPES,
-          rolesClaims: config.OIDC_ROLES_CLAIMS,
-          redirectUri: new URL('/api/auth/oidc/callback', publicUrl).href,
-          postLogoutRedirectUri: new URL('/connexion', publicUrl).href,
-        })
-      : null
+  // SSO : variables OIDC_* du .env (prioritaires), sinon réglages enregistrés depuis l'interface.
+  const sso = new SsoManager(
+    db,
+    box,
+    {
+      issuer: config.OIDC_ISSUER,
+      clientId: config.OIDC_CLIENT_ID,
+      clientSecret: config.OIDC_CLIENT_SECRET,
+      scopes: config.OIDC_SCOPES,
+      rolesClaims: config.OIDC_ROLES_CLAIMS,
+      providerName: config.OIDC_PROVIDER_NAME,
+    },
+    publicUrl,
+    config.VERCIO_LOCAL_AUTH,
+  )
+  await sso.load()
 
   await app.register(cookie)
   await app.register(rateLimit, { global: false })
@@ -211,7 +216,7 @@ export async function buildApp({
           dataDir: config.VERCIO_DATA_DIR,
           databaseUrl: config.DATABASE_URL,
           localAuth: config.VERCIO_LOCAL_AUTH,
-          sso: Boolean(config.OIDC_ISSUER),
+          sso: () => sso.current() !== null,
           updateCheck: config.VERCIO_UPDATE_CHECK,
         },
       })
@@ -223,10 +228,10 @@ export async function buildApp({
         publicUrl,
         localEnabled: config.VERCIO_LOCAL_AUTH,
         setupCode: firstRunCode,
-        oidc,
-        oidcProviderName: config.OIDC_PROVIDER_NAME,
+        sso,
       })
       await api.register(settingsRoutes, { prefix: '/settings', db, box })
+      await api.register(ssoRoutes, { prefix: '/settings/sso', db, sso })
       await api.register(notificationRoutes, { prefix: '/settings', db, box, notifications })
       await api.register(userRoutes, {
         prefix: '/settings/users',

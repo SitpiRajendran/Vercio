@@ -843,7 +843,7 @@ function KindCard({
       aria-pressed={selected}
       className={cn(
         'hover:border-foreground/30 rounded-xl border p-5 text-left transition-colors',
-        selected && 'border-primary ring-primary ring-1',
+        selected && 'border-brand ring-brand ring-1',
       )}
     >
       <span className="text-muted-foreground [&_svg]:size-6">{icon}</span>

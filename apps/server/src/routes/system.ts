@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify'
+import { clockStatus } from '../lib/clock.js'
 import { sql } from 'drizzle-orm'
 import {
   cleanupInputSchema,
@@ -27,7 +28,7 @@ export const systemRoutes: FastifyPluginAsync<{
     dataDir: string
     databaseUrl: string
     localAuth: boolean
-    sso: boolean
+    sso: () => boolean
     updateCheck: boolean
   }
 }> = async (app, { db, host, disk, updates, settings }) => {
@@ -135,7 +136,7 @@ export const systemRoutes: FastifyPluginAsync<{
         publicUrl: settings.publicUrl,
         dataDir: settings.dataDir,
         localAuth: settings.localAuth,
-        sso: settings.sso,
+        sso: settings.sso(),
         updateCheck: settings.updateCheck,
       },
       database,
@@ -148,6 +149,7 @@ export const systemRoutes: FastifyPluginAsync<{
         workingDir: self.labels['com.docker.compose.project.working_dir'] ?? null,
         mounts: self.mounts.filter((mount) => mount.destination !== '/var/run/docker.sock'),
       },
+      clock: clockStatus(),
       counts: counts!,
     }
   })

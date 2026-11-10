@@ -246,10 +246,17 @@ describe.skipIf(!TEST_DATABASE_URL)('Déploiements', () => {
       environment: { slug: 'prod' },
     })
     expect(message!.facts).toContainEqual({ label: 'Déclencheur', value: expect.any(String) })
+    // Commit lu dans l'image (label OCI), message demandé à GitLab.
     expect(result.versions[project.sources[0]!.id]).toEqual({
       branch: 'main',
       ref: 'latest',
       tag: 'latest',
+      commit: expect.objectContaining({
+        sha: `cccccccc${'0'.repeat(32)}`,
+        shortSha: 'cccccccc',
+        message: 'Commit cccccccc',
+        url: expect.stringContaining('/acme/site/-/commit/cccccccc'),
+      }),
     })
     expect(result.images.front).toMatch(
       new RegExp(`^${registry.url.replace('http://', '')}/acme/site/front@sha256:`),
@@ -462,6 +469,23 @@ describe.skipIf(!TEST_DATABASE_URL)('Déploiements', () => {
     expect(events.at(-1)).toMatchObject({ type: 'status', deployment: { status: 'succeeded' } })
   })
 
+  it('sans label dans l’image : commit du dernier pipeline réussi de la branche', async () => {
+    // Nouvelle construction (nouveau digest), sans label.
+    registry.options.revisionLabels = false
+    images['acme/site/front:latest'] = '2026-02-02T00:00:00Z'
+    images['acme/site/back:latest'] = '2026-02-02T00:00:00Z'
+    await setVersion('latest')
+    const result = await detail((await deploy()).id)
+    registry.options.revisionLabels = true
+    images['acme/site/front:latest'] = '2026-02-01T00:00:00Z'
+    images['acme/site/back:latest'] = '2026-02-01T00:00:00Z'
+    expect(result.status).toBe('succeeded')
+    expect(Object.values(result.versions)[0]!.commit).toMatchObject({
+      sha: `bbbbbbbb${'0'.repeat(32)}`,
+      message: 'Commit bbbbbbbb',
+    })
+  })
+
   it('déploie le dernier build selon la convention de tags du dépôt', async () => {
     // Tag fixe « v1.3 » comme dernier build (modèle sans {branch}).
     await db.update(appSources).set({ latestTagTemplate: 'v1.3' })
@@ -471,7 +495,10 @@ describe.skipIf(!TEST_DATABASE_URL)('Déploiements', () => {
     expect(result.status).toBe('succeeded')
     expect(Object.values(result.versions)[0]).toMatchObject({ ref: 'latest', tag: 'v1.3' })
     // Version de la CI dont les images sont exactement celles du tag mobile.
-    expect(Object.values(result.versions)[0]).toMatchObject({ version: 'v1.3' })
+    expect(Object.values(result.versions)[0]).toMatchObject({
+      version: 'v1.3',
+      commit: { message: 'Version v1.3' },
+    })
   })
 
   it('explique un port déjà pris et nomme le conteneur qui l’occupe', async () => {

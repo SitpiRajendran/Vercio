@@ -4,6 +4,23 @@ All notable changes to Vercio are listed here. Versions follow [semantic version
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-10
+
+### Added
+
+- SSO from the interface: Settings → « Connexion SSO » configures Keycloak (or any OpenID Connect provider) without editing `.env` or restarting. A « Tester » button checks the realm address, client and secret; the addresses to copy into Keycloak are listed with a copy button. The client secret is stored encrypted. `OIDC_*` variables in `.env` still take precedence (the page is then read-only), and local accounts stay available. Turning SSO off removes the button and closes open SSO sessions; it cannot be done from an SSO session.
+- Recovery codes: 10 single-use codes given when two-factor authentication is turned on, usable on the sign-in page instead of the authenticator code, and generated again from « Double authentification » (current password asked). Accounts without codes see a reminder in the sidebar.
+- Server clock check: Vercio compares its clock with GitHub's at each update check, compensates the gap for authenticator codes (up to 15 minutes) and shows it in « Pour les nerds », with a warning when NTP should be turned on.
+- New Vercio logo (sidebar, login page, browser tab icon that follows the light or dark system theme, README); brand files and usage rules in `.github/brand`. Primary buttons use the deep petrol blue of the logo; links, focus and charts use a lighter petrol blue in dark mode so they stay readable. Backgrounds and text are unchanged.
+- Deployment history as a searchable table: commit id and message (matched by tag, read from the image's OCI revision label, or taken from the last successful GitLab pipeline / GitHub workflow of the branch, with no CI change needed), followed version, trigger, start time and duration, with pagination. The deployment page shows the commit too.
+
+### Fixed
+
+- Sign-in works with password managers (1Password, Bitwarden, browsers): the username, password and authenticator code fields are recognised and filled, and the code offered is the one of the right account.
+- Turning on two-factor authentication keeps the same key if the screen is requested twice, so the QR code shown always matches the expected one.
+- A refused authenticator code is no longer sent again when a password manager fills it a second time, which could lock the account in a few seconds.
+- Clearer messages when a code is refused: code already used (wait for the next one), server or phone clock out of sync (with the gap), and how long the account stays locked after too many attempts.
+
 ## [0.2.2] - 2026-10-22
 
 ### Added

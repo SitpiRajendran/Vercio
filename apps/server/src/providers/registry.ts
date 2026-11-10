@@ -18,6 +18,8 @@ export class RegistryError extends Error {}
 export interface ImageTagInfo {
   digest: string
   createdAt: string | null
+  /** Commit de la construction (label `org.opencontainers.image.revision`), s'il est posé. */
+  revision?: string | null
 }
 
 const MANIFEST_TYPES = [
@@ -27,8 +29,8 @@ const MANIFEST_TYPES = [
   'application/vnd.docker.distribution.manifest.v2+json',
 ].join(', ')
 
-/** Date de création par digest de configuration : un digest ne change jamais. */
-const createdCache = new Map<string, string | null>()
+/** Date de création et révision par digest de configuration : un digest ne change jamais. */
+const createdCache = new Map<string, { created: string | null; revision: string | null } | null>()
 const CREATED_CACHE_MAX = 5000
 /** Jetons Bearer par registry et portée, réutilisés quelques secondes. */
 const tokenCache = new Map<string, { value: string | null; expiresAt: number }>()
@@ -119,17 +121,19 @@ export class OciRegistryClient {
       config?: { digest: string }
     }
     if (!digest) throw new RegistryError('Le registry n’a pas renvoyé le digest de l’image')
-    return { digest, createdAt: await this.createdAt(path, manifest, headers) }
+    const config = await this.imageConfig(path, manifest, headers)
+    return { digest, createdAt: config?.created ?? null, revision: config?.revision ?? null }
   }
 
-  private async createdAt(
+  /** Date de création et commit de l'image, lus dans sa configuration. */
+  private async imageConfig(
     path: string,
     manifest: {
       manifests?: { digest: string; platform?: { os?: string; architecture?: string } }[]
       config?: { digest: string }
     },
     headers: Record<string, string>,
-  ): Promise<string | null> {
+  ): Promise<{ created: string | null; revision: string | null } | null> {
     let configDigest = manifest.config?.digest
     if (!configDigest && manifest.manifests?.length) {
       // Image multi-architecture : on lit la variante linux/amd64, sinon la première.
@@ -161,10 +165,25 @@ export class OciRegistryClient {
       // Stockage externe (S3, GCS…) : URL signée, sans l'en-tête Authorization du registry.
       blob = await httpRequest(new URL(location, this.baseUrl).href, {}, this.settings)
     }
-    const created = blob.ok ? (((await blob.json()) as { created?: string }).created ?? null) : null
+    const body = blob.ok
+      ? ((await blob.json()) as {
+          created?: string
+          config?: { Labels?: Record<string, string> | null }
+        })
+      : null
+    const labels = body?.config?.Labels ?? {}
+    const result = body
+      ? {
+          created: body.created ?? null,
+          revision:
+            labels['org.opencontainers.image.revision'] ??
+            labels['org.label-schema.vcs-ref'] ??
+            null,
+        }
+      : null
     if (createdCache.size >= CREATED_CACHE_MAX) createdCache.clear()
-    createdCache.set(configDigest, created)
-    return created
+    createdCache.set(configDigest, result)
+    return result
   }
 
   private async requestAuthorization(scope?: string): Promise<string | null> {

@@ -10,12 +10,21 @@ import { BackupsSettingsTab } from './backups'
 import { GitProvidersTab } from './git-providers'
 import { NotificationsSettingsTab } from './notifications'
 import { RegistriesTab } from './registries'
+import { SsoSettingsTab } from './sso'
 import { SystemInfoTab } from './system-info'
 import { EmptyState } from './resource-list'
 import { UsersTab } from './users'
 import { WebhooksSettingsTab } from './webhooks'
 
-const TABS = ['users', 'code', 'webhooks', 'notifications', 'sauvegardes', 'infos'] as const
+const TABS = [
+  'users',
+  'connexion',
+  'code',
+  'webhooks',
+  'notifications',
+  'sauvegardes',
+  'infos',
+] as const
 /** Anciens onglets, réunis dans « Code et images ». */
 const LEGACY: Record<string, string> = { git: 'code', registries: 'code' }
 
@@ -45,13 +54,14 @@ export function SettingsPage() {
     <>
       <PageHeader
         title="Paramètres"
-        description="Utilisateurs, code et images (GitLab, GitHub, registries), webhooks, notifications et sauvegardes"
+        description="Utilisateurs, connexion SSO, code et images (GitLab, GitHub, registries), webhooks, notifications et sauvegardes"
       />
       <div className="p-4 md:p-6">
         {isAdmin ? (
           <Tabs value={tab} onValueChange={choose}>
             <StickyTabsList>
               <TabsTrigger value="users">Utilisateurs</TabsTrigger>
+              <TabsTrigger value="connexion">Connexion SSO</TabsTrigger>
               <TabsTrigger value="code">Code et images</TabsTrigger>
               <TabsTrigger value="webhooks">Webhooks</TabsTrigger>
               <TabsTrigger value="notifications">Notifications</TabsTrigger>
@@ -60,6 +70,9 @@ export function SettingsPage() {
             </StickyTabsList>
             <TabsContent value="users" className="pt-4">
               <UsersTab />
+            </TabsContent>
+            <TabsContent value="connexion" className="pt-4">
+              <SsoSettingsTab />
             </TabsContent>
             <TabsContent value="code" className="space-y-8 pt-4">
               <CodeToImageFlow />

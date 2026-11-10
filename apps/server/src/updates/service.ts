@@ -13,6 +13,7 @@ import type { Database } from '../db/client.js'
 import { deployments } from '../db/schema.js'
 import type { HostDriver, SelfContainer } from '../docker/host-driver.js'
 import { audit } from '../lib/audit.js'
+import { clockStatus, recordReferenceTime } from '../lib/clock.js'
 import { describeNetworkError, httpRequest } from '../lib/http.js'
 
 /** Dépôt public : ses releases annoncent les versions, ses images sont sur ghcr.io. */
@@ -127,6 +128,13 @@ export class UpdateService {
     try {
       this.#latest = await (this.options.fetchRelease ?? fetchLatestRelease)()
       this.#error = null
+      const clock = clockStatus()
+      if (clock && Math.abs(clock.offsetSeconds) >= 20) {
+        this.options.log.warn(
+          { offsetSeconds: clock.offsetSeconds },
+          'Horloge du serveur décalée : activez la synchronisation NTP (timedatectl set-ntp true)',
+        )
+      }
     } catch (error) {
       this.#error = error instanceof UpdateError ? error.message : describeNetworkError(error)
       this.options.log.warn({ err: error }, 'Vérification des mises à jour impossible')
@@ -294,10 +302,13 @@ async function readJson<T>(file: string): Promise<T | null> {
 
 /** Dernière release du dépôt public. */
 export async function fetchLatestRelease(): Promise<VercioRelease> {
+  const sentAt = Date.now()
   const response = await httpRequest(
     `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`,
     { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Vercio' } },
   )
+  // Au passage, l'heure de GitHub : mesure le décalage de l'horloge du serveur.
+  recordReferenceTime(response.headers.get('date'), sentAt, Date.now(), 'api.github.com')
   if (!response.ok) throw new UpdateError(`GitHub a répondu ${response.status}`)
   const body = (await response.json()) as {
     tag_name?: string

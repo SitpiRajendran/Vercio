@@ -140,7 +140,7 @@ function AddRegistryButton({ provider }: { provider: GitProviderView }) {
   return (
     <button
       type="button"
-      className="text-primary underline-offset-4 hover:underline"
+      className="text-brand underline-offset-4 hover:underline"
       onClick={() => add.mutate()}
       disabled={add.isPending}
     >
@@ -370,7 +370,7 @@ function instanceUrl(url: string, fallback: string): string {
 /** Droits du token à créer, avec un lien vers la page de création, droits pré-remplis. */
 function TokenRights({ type, url }: { type: GitProviderType; url: string }) {
   const link =
-    'text-primary inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline'
+    'text-brand inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline'
   if (type === 'gitlab') {
     const base = instanceUrl(url, 'https://gitlab.com')
     return (

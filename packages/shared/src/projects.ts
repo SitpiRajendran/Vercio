@@ -570,6 +570,8 @@ export interface DeploymentSummary {
       tag: string
       /** Dernier build : commit (`e8193b2f`) ou tag de version qui l'a produit, s'il est connu. */
       version?: string
+      /** Commit déployé : identifiant, message, auteur, lien (s'il est connu). */
+      commit?: CommitInfo
     }
   >
   /** Par service suivi : image épinglée par digest. */

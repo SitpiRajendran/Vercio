@@ -10,6 +10,7 @@ import {
   type ComposeAnalysis,
   type DeploymentEvent,
   type DeploymentLogLine,
+  type CommitInfo,
   type DeploymentSummary,
   type PublishedPortRule,
 } from '@vercio/shared'
@@ -1240,6 +1241,8 @@ export class DeploymentEngine {
       const tag = envSource.ref === 'latest' ? channelTag(envSource.branch, source) : envSource.ref
       versions[source.id] = { branch: envSource.branch, ref: envSource.ref, tag }
       await log(`▶ Résolution de ${source.repository} : ${tag}`)
+      /** Commit de la construction, lu sur la première image qui le porte. */
+      let revision: string | null = null
       const forSource = context.tracked
         .filter((item) => item.service.appSourceId === source.id)
         .sort((a, b) => a.service.serviceName.localeCompare(b.service.serviceName))
@@ -1255,6 +1258,7 @@ export class DeploymentEngine {
         }
         const client = await clients.get(registry.id)!
         const info = await client.getTag(service.imageRepository, tag)
+        revision ??= info?.revision ?? null
         if (!info) {
           throw new DeployError(
             await missingImageMessage(client, {
@@ -1270,22 +1274,55 @@ export class DeploymentEngine {
           `${registryHost(registry.url)}/${service.imageRepository}@${info.digest}`
         await log(`  ${service.serviceName} → ${images[service.serviceName]}`)
       }
-      // Dernier build (tag mobile `prod`, `latest`…) : le commit ou le tag de version qui a
-      // produit exactement ces images, pour l'historique.
-      if (envSource.ref === 'latest' && forSource.length && this.options.versions) {
+      // Version de la CI (commit ou tag) qui a produit exactement ces images, pour l'historique.
+      let commit: CommitInfo | null = null
+      if (forSource.length && this.options.versions) {
         try {
           const choices = await this.options.versions.choices(source.id, envSource.branch)
-          const latest = choices?.latest
-          const same =
-            latest?.version &&
-            latest.images.every((image) => images[image.serviceName]?.endsWith(`@${image.digest}`))
-          if (same) {
-            versions[source.id]!.version = latest.version!.name
-            await log(`  = ${latest.version!.name} (${latest.version!.commit.shortSha})`)
+          const same = (candidate: { images: { serviceName: string; digest: string }[] }) =>
+            candidate.images.every((image) =>
+              images[image.serviceName]?.endsWith(`@${image.digest}`),
+            )
+          const match =
+            envSource.ref === 'latest'
+              ? choices?.latest.version && same(choices.latest)
+                ? choices.latest.version
+                : null
+              : (choices?.tags.find((item) => item.name === envSource.ref && same(item)) ?? null)
+          if (match) {
+            versions[source.id]!.version = match.name
+            commit = match.commit
           }
         } catch {
           // Pas de nom de version : l'historique affiche le tag.
         }
+      }
+      // Sinon, le commit inscrit dans l'image par la CI (label OCI), ou à défaut celui du dernier
+      // pipeline réussi de la branche (c'est lui qui a poussé l'image) ; complété chez GitLab/GitHub.
+      const git = this.gitClient(entry.provider)
+      if (!commit && forSource.length && !(revision && /^[0-9a-f]{7,40}$/i.test(revision))) {
+        revision = await git
+          .lastSuccessfulBuild(
+            source.repository,
+            envSource.ref === 'latest' ? envSource.branch : envSource.ref,
+          )
+          .catch(() => null)
+      }
+      if (!commit && revision && /^[0-9a-f]{7,40}$/i.test(revision)) {
+        const details: { message?: string | null; author?: string | null; date?: string | null } =
+          await git.commitDetails(source.repository, revision).catch(() => ({}))
+        commit = {
+          sha: revision,
+          shortSha: revision.slice(0, 8),
+          message: details.message ?? null,
+          author: details.author ?? null,
+          date: details.date ?? null,
+          url: git.commitUrl(source.repository, revision),
+        }
+      }
+      if (commit) {
+        versions[source.id]!.commit = commit
+        await log(`  = ${commit.shortSha}${commit.message ? ` ${commit.message}` : ''}`)
       }
     }
     return { images, versions }

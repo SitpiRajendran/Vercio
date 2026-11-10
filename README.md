@@ -1,4 +1,9 @@
-# Vercio
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/brand/vercio-logo-horizontal-dark.svg">
+    <img src=".github/brand/vercio-logo-horizontal.svg" alt="Vercio" width="260">
+  </picture>
+</h1>
 
 A web interface to deploy and monitor your Docker Compose projects, on your own server.
 
@@ -32,14 +37,18 @@ Vercio is made for small teams hosting a few websites or APIs on a server who wa
 ## Features
 
 - **Deployment** from GitLab, GitHub or any registry: by branch, by tag, or automatically after each successful build (webhook).
+- **Deployment history** with the commit id and message of each deployment, searchable.
 - **Rollback** in one click, and automatic rollback when a deployment fails.
 - **Zero-downtime updates** for the services that allow it.
 - **Container monitoring**: state, health, open ports, CPU and memory, live logs, terminal in the browser.
 - **Map** of the traffic between containers and of the ports exposed to the Internet.
+- **Open ports** to the outside from the project page, with a « site temporarily unavailable » page instead of an error while a service restarts.
+- **Connect projects** together: a service of another project (its database, for example) becomes reachable by name.
 - **Environment variables**, encrypted, per project and per environment (production, staging…).
 - **Backups** of databases (PostgreSQL, MySQL, MariaDB, MongoDB) and volumes to S3 or a folder: encrypted, scheduled, restorable from the interface. Vercio also backs itself up.
 - **Notifications** by email, Microsoft Teams or webhook.
-- **Accounts** with mandatory two-factor authentication, three roles, and optional Keycloak SSO (OpenID Connect).
+- **Accounts** with mandatory two-factor authentication (several authenticator apps, recovery codes, works with password managers), three roles, and optional Keycloak SSO (OpenID Connect) set up from the settings page.
+- **Updates of Vercio** in one click from the interface, with a backup first and automatic return to the previous version if needed.
 
 Vercio does not manage the reverse proxy, certificates or image builds: it relies on what you already have.
 
@@ -120,28 +129,28 @@ To update by hand instead:
 docker compose pull && docker compose up -d
 ```
 
-Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.1` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
+Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.3` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
 
 ## Configuration
 
-Everything is set in the `.env` file next to `docker-compose.yml`. After a change: `docker compose up -d`.
+Installation settings are in the `.env` file next to `docker-compose.yml`. After a change: `docker compose up -d`. Everything else (Git providers, registries, SSO, notifications, backups) is set from the **Paramètres** (Settings) page.
 
-| Variable                                              | Purpose                                                               |
-| ----------------------------------------------------- | --------------------------------------------------------------------- |
-| `PUBLIC_URL`                                          | Public address of Vercio, for example `https://vercio.example.com`    |
-| `VERCIO_SECRET_KEY`                                   | Key that encrypts stored secrets. **Keep a copy outside the server.** |
-| `DB_PASSWORD`                                         | Password of Vercio's own database                                     |
-| `VERCIO_SETUP_CODE`                                   | Code asked when creating the first administrator account              |
-| `TZ`                                                  | Time zone of scheduled backups (`Europe/Paris` by default)            |
-| `TRUST_PROXY`                                         | Number of reverse proxies in front of Vercio (`1` by default)         |
-| `VERCIO_ADMIN_USERNAME`, `VERCIO_ADMIN_PASSWORD`      | Create the first administrator at startup, without the setup page     |
-| `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | SSO login (optional, see below)                                       |
-| `OIDC_PROVIDER_NAME`                                  | Name shown on the SSO login button (`Keycloak` by default)            |
-| `OIDC_ROLES_CLAIMS`                                   | Where roles are read in the SSO token (see below)                     |
-| `VERCIO_LOCAL_AUTH`                                   | `false` to allow SSO only                                             |
-| `VERCIO_TAG`                                          | Image version to run (`latest` by default)                            |
-| `VERCIO_UPDATE_CHECK`                                 | `false` to stop checking GitHub for new versions                      |
-| `VERCIO_PORT`                                         | Local port Vercio listens on (`9000` by default)                      |
+| Variable                                              | Purpose                                                                 |
+| ----------------------------------------------------- | ----------------------------------------------------------------------- |
+| `PUBLIC_URL`                                          | Public address of Vercio, for example `https://vercio.example.com`      |
+| `VERCIO_SECRET_KEY`                                   | Key that encrypts stored secrets. **Keep a copy outside the server.**   |
+| `DB_PASSWORD`                                         | Password of Vercio's own database                                       |
+| `VERCIO_SETUP_CODE`                                   | Code asked when creating the first administrator account                |
+| `TZ`                                                  | Time zone of scheduled backups (`Europe/Paris` by default)              |
+| `TRUST_PROXY`                                         | Number of reverse proxies in front of Vercio (`1` by default)           |
+| `VERCIO_ADMIN_USERNAME`, `VERCIO_ADMIN_PASSWORD`      | Create the first administrator at startup, without the setup page       |
+| `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | SSO login (optional; can also be set from the settings page, see below) |
+| `OIDC_PROVIDER_NAME`                                  | Name shown on the SSO login button (`Keycloak` by default)              |
+| `OIDC_ROLES_CLAIMS`                                   | Where roles are read in the SSO token (see below)                       |
+| `VERCIO_LOCAL_AUTH`                                   | `false` to allow SSO only                                               |
+| `VERCIO_TAG`                                          | Image version to run (`latest` by default)                              |
+| `VERCIO_UPDATE_CHECK`                                 | `false` to stop checking GitHub for new versions                        |
+| `VERCIO_PORT`                                         | Local port Vercio listens on (`9000` by default)                        |
 
 ## Usage
 
@@ -152,7 +161,7 @@ Everything is set in the `.env` file next to `docker-compose.yml`. After a chang
 
 ### Accounts and roles
 
-Administrators create accounts in **Paramètres → Utilisateurs** (Settings → Users). Everyone sets up two-factor authentication at their first login.
+Administrators create accounts in **Paramètres → Utilisateurs** (Settings → Users). Everyone sets up two-factor authentication at their first login and receives 10 single-use recovery codes. Further authenticator apps and new recovery codes are managed from the account menu (« Double authentification »).
 
 | Role              | Can…                                           |
 | ----------------- | ---------------------------------------------- |
@@ -171,7 +180,9 @@ Local accounts and SSO work together: the login page offers both.
    - _Backchannel logout URL_: `https://vercio.example.com/api/auth/oidc/backchannel-logout` (with _Backchannel logout session required_)
    - _Advanced → Proof Key for Code Exchange_: `S256`
 2. In the client's _Roles_ tab, create `vercio-admin`, `vercio-deployer` and `vercio-viewer`, and assign them to your users or groups. Without one of these roles, login is refused.
-3. Add `OIDC_ISSUER` (for example `https://keycloak.example.com/realms/my-realm`), `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` to `.env`, then run `docker compose up -d`.
+3. In Vercio, open Settings → « Connexion SSO », enter the realm address (for example `https://keycloak.example.com/realms/my-realm`), the client ID and secret, click « Tester », then « Enregistrer ». It applies at once, without a restart; the page also lists the addresses to copy into Keycloak.
+
+   Alternatively, set `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` in `.env` and run `docker compose up -d`. Variables in `.env` take precedence: the settings page then shows them read-only. Turning local accounts off (`VERCIO_LOCAL_AUTH=false`) is only possible from `.env`, so a mistake on the settings page never locks you out.
 
 Roles are read again at each login. Vercio looks for them in the client roles, the realm roles and top-level groups (a `/vercio-admin` group grants the `vercio-admin` role; a subgroup such as `/team/vercio-admin` does not). `OIDC_ROLES_CLAIMS` changes where they are read from. If Keycloak uses a certificate from an internal authority, add it with a `docker-compose.override.yml` next to `docker-compose.yml`:
 
@@ -215,12 +226,16 @@ The first line empties the database so that the backup is restored exactly, even
 
 ### Emergency access
 
-If an administrator loses their phone or password, another administrator can reset it. Otherwise, from the server:
+When two-factor authentication is turned on, Vercio gives 10 single-use recovery codes: keep them in a password manager or on paper. On the sign-in page, « Utiliser un code de secours » accepts one instead of the authenticator code. New codes can be generated from the account menu (« Double authentification »).
+
+If an administrator loses their phone, password and recovery codes, another administrator can reset them. Otherwise, from the server (anyone who can run this already controls the server, so it adds no risk):
 
 ```sh
 docker compose exec vercio node dist/cli.js reset-totp <username>
 docker compose exec vercio node dist/cli.js reset-password <username>
 ```
+
+If every authenticator code is refused, check the server clock first: codes are only valid for about 30 seconds, so a clock off by a minute rejects them all. When update checks are on, Vercio measures the gap with GitHub's clock, compensates it for authenticator codes and shows it in Settings → « Pour les nerds ». `timedatectl` should show `System clock synchronized: yes`; otherwise enable NTP (`sudo timedatectl set-ntp true`) and make sure outbound UDP port 123 is allowed. After too many refused codes the account is locked for 15 minutes; `docker compose restart vercio` lifts the lock.
 
 ## Contributing
 

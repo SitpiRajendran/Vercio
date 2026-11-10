@@ -27,6 +27,11 @@ import type {
   RepositorySummary,
   SessionUser,
   TotpCode,
+  SsoSettingsInput,
+  SsoSettingsView,
+  RecoveryCodeInput,
+  RecoveryCodesIssued,
+  RecoveryCodesStatus,
   TotpVerifyResult,
   UserCreateInput,
   UserUpdateInput,
@@ -165,6 +170,14 @@ export const api = {
   initialPassword: (password: string) =>
     request<{ ok: true }>('/auth/password/initial', json('POST', { password })),
   changePassword: (body: ChangePassword) => request<void>('/auth/password', json('POST', body)),
+  recoveryCodes: {
+    /** Connexion : code de secours à la place du code TOTP. */
+    verify: (body: RecoveryCodeInput) =>
+      request<TotpVerifyResult>('/auth/totp/recovery/verify', json('POST', body)),
+    status: () => request<RecoveryCodesStatus>('/auth/totp/recovery'),
+    regenerate: (currentPassword: string) =>
+      request<RecoveryCodesIssued>('/auth/totp/recovery', json('POST', { currentPassword })),
+  },
   totpDevices: {
     list: () => request<TotpDeviceView[]>('/auth/totp/devices'),
     setup: () => request<TotpSetup>('/auth/totp/devices/setup', json('POST')),
@@ -189,6 +202,14 @@ export const api = {
       request<CleanupResult>('/system/cleanup', json('POST', { targets })),
   },
 
+  sso: {
+    get: () => request<SsoSettingsView>('/settings/sso'),
+    save: (input: SsoSettingsInput) =>
+      request<SsoSettingsView>('/settings/sso', json('PUT', input)),
+    test: (input: SsoSettingsInput) =>
+      request<ConnectionCheck>('/settings/sso/test', json('POST', input)),
+    remove: () => request<void>('/settings/sso', { method: 'DELETE' }),
+  },
   gitProviders: {
     list: () => request<GitProviderView[]>('/settings/git-providers'),
     create: (input: GitProviderInput) =>

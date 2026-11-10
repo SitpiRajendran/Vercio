@@ -376,7 +376,7 @@ function AllowlistCard({
 
 export const WEBHOOK_RESULTS: Record<WebhookResult, { label: string; className: string }> = {
   deployed: { label: 'Déployé', className: 'text-success' },
-  merged: { label: 'Fusionné', className: 'text-primary' },
+  merged: { label: 'Fusionné', className: 'text-brand' },
   unchanged: { label: 'Inchangé', className: 'text-muted-foreground' },
   ignored: { label: 'Ignoré', className: 'text-muted-foreground' },
   rejected: { label: 'Refusé', className: 'text-destructive' },
@@ -498,7 +498,7 @@ function AutoInstall({
       href={hook.providerHooksUrl}
       target="_blank"
       rel="noreferrer"
-      className="text-primary inline-flex items-center gap-1 underline-offset-4 hover:underline"
+      className="text-brand inline-flex items-center gap-1 underline-offset-4 hover:underline"
     >
       Voir dans {name}
       <ExternalLink className="size-3" />

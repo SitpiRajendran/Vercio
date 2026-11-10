@@ -7,6 +7,7 @@ import {
   totpCode,
   totpUri,
   verifyTotp,
+  totpClockOffset,
 } from '../src/lib/totp.js'
 
 // Secret des vecteurs de test de la RFC 6238 (« 12345678901234567890 » en ASCII).
@@ -47,6 +48,17 @@ describe('TOTP', () => {
     expect(verifyTotp(RFC_SECRET, code, { now, lastUsedStep: step })).toBeNull()
   })
 
+  it('repère un code d’une heure décalée sans l’accepter', () => {
+    const now = 1_700_000_000_000
+    const step = currentTimeStep(now)
+    // Téléphone en avance de 2 min (ou serveur en retard) : 4 pas.
+    expect(totpClockOffset(RFC_SECRET, totpCode(RFC_SECRET, step + 4), { now })).toBe(120)
+    expect(totpClockOffset(RFC_SECRET, totpCode(RFC_SECRET, step - 6), { now })).toBe(-180)
+    // Dans la fenêtre normale : rien à signaler, verifyTotp l'accepte.
+    expect(totpClockOffset(RFC_SECRET, totpCode(RFC_SECRET, step), { now })).toBeNull()
+    expect(totpClockOffset(RFC_SECRET, totpCode(RFC_SECRET, step + 40), { now })).toBeNull()
+  })
+
   it('refuse les codes mal formés', () => {
     expect(verifyTotp(RFC_SECRET, '12345')).toBeNull()
     expect(verifyTotp(RFC_SECRET, 'abcdef')).toBeNull()
@@ -56,5 +68,35 @@ describe('TOTP', () => {
     const uri = totpUri('ABC', 'admin')
     expect(uri.startsWith('otpauth://totp/Vercio%3Aadmin?')).toBe(true)
     expect(uri).toContain('secret=ABC')
+  })
+})
+
+describe('Horloge du serveur décalée', () => {
+  it('mesure le décalage et le compense pour les codes', async () => {
+    const { recordReferenceTime, totpClockCorrection, clockStatus, resetClockMeasure } =
+      await import('../src/lib/clock.js')
+    const real = Date.now()
+    // Serveur en avance d'une minute : GitHub répond une heure plus tôt que la sienne.
+    const serverNow = real + 60_000
+    const header = new Date(real).toUTCString()
+    recordReferenceTime(header, serverNow - 100, serverNow + 100, 'test')
+    expect(clockStatus()).toMatchObject({ corrected: true })
+    expect(Math.abs(clockStatus()!.offsetSeconds + 60)).toBeLessThanOrEqual(1)
+    const correction = totpClockCorrection()
+    expect(Math.abs(correction + 60_000)).toBeLessThan(1500)
+
+    // Le code du téléphone (heure juste) est accepté malgré l'horloge du serveur.
+    const phoneStep = currentTimeStep(real)
+    expect(
+      verifyTotp(RFC_SECRET, totpCode(RFC_SECRET, phoneStep), { now: serverNow + correction }),
+    ).not.toBeNull()
+    // Sans correction, il serait refusé.
+    expect(verifyTotp(RFC_SECRET, totpCode(RFC_SECRET, phoneStep), { now: serverNow })).toBeNull()
+
+    // Décalage absurde (mesure douteuse) : rien n'est corrigé.
+    recordReferenceTime(new Date(real - 3_600_000).toUTCString(), real, real, 'test')
+    expect(totpClockCorrection()).toBe(0)
+    resetClockMeasure()
+    expect(clockStatus()).toBeNull()
   })
 })

@@ -40,6 +40,13 @@ export class SealedCookie<T extends object> {
   }
 
   clear(reply: FastifyReply): void {
-    reply.clearCookie(this.name, { path: this.path })
+    // Mêmes attributs qu'à la pose : sans `secure`, le navigateur ignore l'effacement d'un
+    // cookie `__Secure-` et l'ancien état de connexion reste en place.
+    reply.clearCookie(this.name, {
+      path: this.path,
+      httpOnly: true,
+      secure: this.secure,
+      sameSite: 'lax',
+    })
   }
 }

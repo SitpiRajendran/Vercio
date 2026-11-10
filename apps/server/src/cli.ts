@@ -6,7 +6,7 @@ import { and, eq } from 'drizzle-orm'
 import { decryptStream } from './backups/crypto.js'
 import { loadConfig } from './config.js'
 import { createDatabase } from './db/client.js'
-import { sessions, totpDevices, users } from './db/schema.js'
+import { sessions, totpDevices, totpRecoveryCodes, users } from './db/schema.js'
 import { audit } from './lib/audit.js'
 import { hashPassword, temporaryPassword } from './lib/password.js'
 
@@ -62,6 +62,7 @@ async function main() {
 
     if (command === 'reset-totp') {
       await db.delete(totpDevices).where(eq(totpDevices.userId, user.id))
+      await db.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.userId, user.id))
       console.log(`Double authentification réinitialisée pour « ${username} ».`)
       console.log('Elle sera de nouveau configurée à la prochaine connexion.')
     } else {

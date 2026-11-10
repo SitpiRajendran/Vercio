@@ -1,16 +1,32 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { History, Loader2, RotateCcw, ScrollText } from 'lucide-react'
+import { useState } from 'react'
+import {
+  ChevronLeft,
+  ChevronRight,
+  History,
+  Loader2,
+  RotateCcw,
+  ScrollText,
+  Search,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import type { DeploymentSummary, ProjectView } from '@vercio/shared'
 import {
   DeploymentStatusBadge,
   deployedTags,
-  deployedVersions,
   duration,
   TRIGGER_LABELS,
 } from '@/components/projects/deployment-status'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api } from '@/lib/api'
 import { formatDateTime, formatRelative } from '@/lib/format'
@@ -54,18 +70,158 @@ export function DeploymentsTab({
         </div>
       )}
       {Boolean(history.data?.length) && (
-        <div className="divide-y rounded-lg border">
-          {history.data!.map((deployment) => (
-            <DeploymentRow
-              key={deployment.id}
-              project={project}
-              deployment={deployment}
-              isCurrent={environment.current?.id === deployment.id}
-              canDeploy={canDeploy}
-            />
-          ))}
-        </div>
+        <DeploymentTable
+          project={project}
+          deployments={history.data!}
+          currentId={environment.current?.id ?? null}
+          canDeploy={canDeploy}
+        />
       )}
+    </div>
+  )
+}
+
+const PAGE_SIZES = [10, 25, 50]
+
+/** Texte cherché : commit, message, version, auteur, erreur. */
+function searchable(deployment: DeploymentSummary): string {
+  const versions = Object.values(deployment.versions)
+  return [
+    ...versions.flatMap((version) => [
+      version.tag,
+      version.version,
+      version.commit?.sha,
+      version.commit?.message,
+      version.commit?.author,
+    ]),
+    deployment.username,
+    deployment.error,
+    TRIGGER_LABELS[deployment.trigger],
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+}
+
+/** Historique en tableau : statut, commit et message, version suivie, déclencheur, durée. */
+function DeploymentTable({
+  project,
+  deployments,
+  currentId,
+  canDeploy,
+}: {
+  project: ProjectView
+  deployments: DeploymentSummary[]
+  currentId: string | null
+  canDeploy: boolean
+}) {
+  const [query, setQuery] = useState('')
+  const [pageSize, setPageSize] = useState(10)
+  const [page, setPage] = useState(0)
+  const filtered = query.trim()
+    ? deployments.filter((item) => searchable(item).includes(query.trim().toLowerCase()))
+    : deployments
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const current = Math.min(page, pages - 1)
+  const shown = filtered.slice(current * pageSize, (current + 1) * pageSize)
+
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      <div className="border-b p-2">
+        <div className="relative max-w-sm">
+          <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+          <Input
+            className="pl-8"
+            placeholder="Chercher un commit, un message, une personne…"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+              setPage(0)
+            }}
+          />
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-muted-foreground border-b text-left text-xs">
+            <tr>
+              <th className="px-3 py-2 font-medium">Statut</th>
+              <th className="px-3 py-2 font-medium">Commit</th>
+              <th className="px-3 py-2 font-medium">Version</th>
+              <th className="px-3 py-2 font-medium">Déclencheur</th>
+              <th className="px-3 py-2 font-medium">Lancé</th>
+              <th className="px-3 py-2 font-medium">Durée</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {shown.map((deployment) => (
+              <DeploymentRow
+                key={deployment.id}
+                project={project}
+                deployment={deployment}
+                isCurrent={currentId === deployment.id}
+                canDeploy={canDeploy}
+              />
+            ))}
+            {shown.length === 0 && (
+              <tr>
+                <td colSpan={7} className="text-muted-foreground px-3 py-6 text-center">
+                  Aucun déploiement ne correspond.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2 text-xs">
+        <div className="flex items-center gap-2">
+          <span>
+            {filtered.length ? current * pageSize + 1 : 0}–
+            {Math.min((current + 1) * pageSize, filtered.length)} sur {filtered.length}
+          </span>
+          <Select
+            value={String(pageSize)}
+            onValueChange={(value) => {
+              setPageSize(Number(value))
+              setPage(0)
+            }}
+          >
+            <SelectTrigger size="sm" className="h-7 w-auto gap-1 text-xs" aria-label="Par page">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PAGE_SIZES.map((size) => (
+                <SelectItem key={size} value={String(size)}>
+                  {size} / page
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-1">
+          <Button
+            size="icon"
+            variant="outline"
+            className="size-7"
+            aria-label="Page précédente"
+            disabled={current === 0}
+            onClick={() => setPage(current - 1)}
+          >
+            <ChevronLeft />
+          </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            className="size-7"
+            aria-label="Page suivante"
+            disabled={current >= pages - 1}
+            onClick={() => setPage(current + 1)}
+          >
+            <ChevronRight />
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -96,51 +252,81 @@ function DeploymentRow({
     onError: (error) => toast.error(error.message),
   })
 
+  const commit = Object.values(deployment.versions).find((version) => version.commit)?.commit
+  const tags = deployedTags(deployment)
+
   return (
-    <div className="flex flex-wrap items-center gap-3 px-3 py-2.5 text-sm">
-      <DeploymentStatusBadge status={deployment.status} />
-      <div className="min-w-0 flex-1">
-        <p>
-          {/* En service : le tag suivi (`prod`) ; les précédents : le commit qu'il désignait. */}
-          <span className="font-mono">
-            {isCurrent ? deployedTags(deployment) : deployedVersions(deployment)}
-          </span>
-          {isCurrent && deployedVersions(deployment) !== deployedTags(deployment) && (
-            <span className="text-muted-foreground ml-2 font-mono text-xs">
-              {deployedVersions(deployment)}
+    <tr className="align-top">
+      <td className="px-3 py-2.5">
+        <DeploymentStatusBadge status={deployment.status} />
+      </td>
+      <td className="max-w-[28rem] min-w-56 px-3 py-2.5">
+        {commit ? (
+          <p className="flex min-w-0 items-baseline gap-2">
+            <a
+              href={commit.url}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 font-mono text-xs underline-offset-4 hover:underline"
+              title={commit.sha}
+            >
+              {commit.shortSha.slice(0, 7)}
+            </a>
+            <span className="truncate" title={commit.message ?? undefined}>
+              {commit.message ?? ''}
             </span>
-          )}
-          {isCurrent && <span className="text-success ml-2 text-xs">en service</span>}
-        </p>
-        <p className="text-muted-foreground text-xs" title={formatDateTime(deployment.createdAt)}>
-          {formatRelative(deployment.createdAt)} · {TRIGGER_LABELS[deployment.trigger]}
-          {deployment.username ? ` par ${deployment.username}` : ''}
-          {duration(deployment) ? ` · ${duration(deployment)}` : ''}
-        </p>
-        {deployment.error && (
-          <p className="text-destructive truncate text-xs">{deployment.error}</p>
+          </p>
+        ) : (
+          <p className="text-muted-foreground text-xs italic">
+            {Object.keys(deployment.versions).length ? 'commit inconnu' : 'images fixes'}
+          </p>
         )}
-      </div>
-      <Button variant="ghost" size="sm" asChild>
-        <Link
-          to="/projets/$slug/deploiements/$deploymentId"
-          params={{ slug: project.slug, deploymentId: deployment.id }}
-        >
-          <ScrollText />
-          Journal
-        </Link>
-      </Button>
-      {canDeploy && deployment.status === 'succeeded' && !isCurrent && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => rollback.mutate()}
-          disabled={rollback.isPending}
-        >
-          {rollback.isPending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
-          Revenir
+        {commit?.author && <p className="text-muted-foreground text-xs">{commit.author}</p>}
+        {deployment.error && (
+          <p className="text-destructive truncate text-xs" title={deployment.error}>
+            {deployment.error}
+          </p>
+        )}
+      </td>
+      <td className="px-3 py-2.5 whitespace-nowrap">
+        <span className="font-mono text-xs">{tags}</span>
+        {isCurrent && <span className="text-success ml-2 text-xs">en service</span>}
+      </td>
+      <td className="text-muted-foreground px-3 py-2.5 text-xs whitespace-nowrap">
+        {TRIGGER_LABELS[deployment.trigger]}
+        {deployment.username ? ` · ${deployment.username}` : ''}
+      </td>
+      <td
+        className="text-muted-foreground px-3 py-2.5 text-xs whitespace-nowrap"
+        title={formatDateTime(deployment.createdAt)}
+      >
+        {formatRelative(deployment.createdAt)}
+      </td>
+      <td className="text-muted-foreground px-3 py-2.5 text-xs whitespace-nowrap">
+        {duration(deployment) ?? '—'}
+      </td>
+      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+        <Button variant="ghost" size="sm" asChild>
+          <Link
+            to="/projets/$slug/deploiements/$deploymentId"
+            params={{ slug: project.slug, deploymentId: deployment.id }}
+          >
+            <ScrollText />
+            Journal
+          </Link>
         </Button>
-      )}
-    </div>
+        {canDeploy && deployment.status === 'succeeded' && !isCurrent && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => rollback.mutate()}
+            disabled={rollback.isPending}
+          >
+            {rollback.isPending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+            Revenir
+          </Button>
+        )}
+      </td>
+    </tr>
   )
 }

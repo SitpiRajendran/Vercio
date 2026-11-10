@@ -9,7 +9,7 @@ import {
   type UserWithPassword,
 } from '@vercio/shared'
 import type { Database } from '../db/client.js'
-import { sessions, totpDevices, users } from '../db/schema.js'
+import { sessions, totpDevices, totpRecoveryCodes, users } from '../db/schema.js'
 import { hashPassword, temporaryPassword } from '../lib/password.js'
 import { auditAction, isUniqueViolation, parseInput } from './helpers.js'
 
@@ -198,6 +198,7 @@ export const userRoutes: FastifyPluginAsync<{ db: Database; localEnabled: boolea
         .send({ error: 'La double authentification d’un compte SSO se gère chez le fournisseur' })
     }
     await db.delete(totpDevices).where(eq(totpDevices.userId, row.id))
+    await db.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.userId, row.id))
     await closeSessions(row.id)
     await track(request, 'user.reset_totp', row)
     return toUserView(row, 0)

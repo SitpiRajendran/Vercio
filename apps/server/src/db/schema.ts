@@ -103,6 +103,24 @@ export const totpDevices = pgTable(
   (t) => [index('totp_devices_user_idx').on(t.userId)],
 )
 
+/**
+ * Codes de secours : à usage unique, à la place d'un code TOTP quand l'application
+ * d'authentification est perdue ou refuse les codes. Seul leur haché est gardé.
+ */
+export const totpRecoveryCodes = pgTable(
+  'totp_recovery_codes',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    codeHash: text('code_hash').notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('totp_recovery_codes_user_idx').on(t.userId)],
+)
+
 export const sessions = pgTable(
   'sessions',
   {

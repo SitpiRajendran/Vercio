@@ -143,7 +143,7 @@ export function AppearanceDialog({
                       onClick={() => setIcon(icon === name ? null : name)}
                       className={cn(
                         'hover:bg-accent flex aspect-square items-center justify-center rounded-md border',
-                        icon === name && 'border-primary ring-primary ring-1',
+                        icon === name && 'border-brand ring-brand ring-1',
                       )}
                     >
                       <Icon className="size-4" />

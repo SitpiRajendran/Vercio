@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
 import {
-  Boxes,
   ChevronsUpDown,
   History,
   Info,
@@ -48,7 +47,8 @@ import { cn } from '@/lib/utils'
 import { openCommandPalette } from './command-palette'
 import { api } from '@/lib/api'
 import { ChangePasswordDialog } from './change-password-dialog'
-import { TotpDevicesDialog } from './totp-devices-dialog'
+import { RecoveryNotice, TotpDevicesDialog } from './totp-devices-dialog'
+import { VercioLogo } from './vercio-logo'
 import { UPDATE_RUNNING, UpdateDialog, UpdateNotice, useUpdateStatus } from './vercio-update'
 import { meQueryKey } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
@@ -80,9 +80,9 @@ export function AppSidebar({ user }: { user: SessionUser }) {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <Link to="/" onClick={closeOnMobile}>
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <Boxes className="size-4" />
-                </div>
+                <span className="flex size-8 shrink-0 items-center justify-center">
+                  <VercioLogo className="size-7" />
+                </span>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="font-semibold">Vercio</span>
                   <span className="text-muted-foreground truncate text-xs">Hôte local</span>
@@ -183,6 +183,11 @@ export function AppSidebar({ user }: { user: SessionUser }) {
           <SidebarMenuItem>
             <UpdateNotice onOpen={() => setAboutOpen(true)} />
           </SidebarMenuItem>
+          {user.provider === 'local' && (
+            <SidebarMenuItem>
+              <RecoveryNotice />
+            </SidebarMenuItem>
+          )}
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild

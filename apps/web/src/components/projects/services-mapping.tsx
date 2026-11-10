@@ -113,7 +113,7 @@ export function ServicesMapping({
               href="/parametres#code"
               target="_blank"
               rel="noreferrer"
-              className="text-primary inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline"
+              className="text-brand inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline"
             >
               Ouvrir Code et images
               <ExternalLink className="size-3" />
@@ -194,7 +194,7 @@ function ServiceRow({
             .{' '}
             <button
               type="button"
-              className="text-primary underline-offset-4 hover:underline"
+              className="text-brand underline-offset-4 hover:underline"
               onClick={() => setEditing(true)}
             >
               Modifier

@@ -74,7 +74,7 @@ describe.skipIf(!TEST_DATABASE_URL)('API — comptes utilisateurs', () => {
       mfa,
     )
     if (verify.json().next === 'done') return cookieValue(verify, '__Host-vercio_session')
-    expect(verify.json()).toEqual({ next: 'password_change' })
+    expect(verify.json()).toMatchObject({ next: 'password_change' })
     expect(newPassword).toBeDefined()
     const changed = await call(
       'POST',

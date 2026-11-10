@@ -199,7 +199,7 @@ function AppearanceSection({ project, canEdit }: { project: ProjectView; canEdit
             href={project.url}
             target="_blank"
             rel="noreferrer"
-            className="text-primary inline-flex items-center gap-1 break-all underline-offset-4 hover:underline"
+            className="text-brand inline-flex items-center gap-1 break-all underline-offset-4 hover:underline"
           >
             {project.url}
             <ExternalLink className="size-3 shrink-0" />

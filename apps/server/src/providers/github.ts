@@ -230,6 +230,13 @@ export class GitHubClient {
     return `${this.settings.url}/${repository}/commit/${sha}`
   }
 
+  async lastSuccessfulBuild(repository: string, ref: string): Promise<string | null> {
+    const runs = await this.get<{ workflow_runs: { head_sha: string }[] }>(
+      `/repos/${repository}/actions/runs?branch=${encodeURIComponent(ref)}&status=success&per_page=1`,
+    )
+    return runs.workflow_runs[0]?.head_sha ?? null
+  }
+
   pipelineUrl(repository: string, ref: string): string {
     return `${this.settings.url}/${repository}/actions?query=${encodeURIComponent(`branch:${ref}`)}`
   }

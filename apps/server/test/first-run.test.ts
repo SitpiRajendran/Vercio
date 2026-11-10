@@ -75,7 +75,9 @@ describe.skipIf(!TEST_DATABASE_URL)('API — premier lancement', () => {
       cookieValue(setup, '__Secure-vercio_mfa'),
     )
     // Mot de passe choisi par l'administrateur : pas de changement imposé.
-    expect(verify.json()).toEqual({ next: 'done' })
+    expect(verify.json()).toMatchObject({ next: 'done' })
+    // Codes de secours remis avec la première application.
+    expect(verify.json().recoveryCodes).toHaveLength(10)
     const cookie = cookieValue(verify, '__Host-vercio_session')
     const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie } })
     expect(me.json()).toMatchObject({

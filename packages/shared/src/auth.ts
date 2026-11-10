@@ -59,6 +59,10 @@ export type LocalLoginResult = z.infer<typeof localLoginResultSchema>
 /** Après le code TOTP : connecté, ou mot de passe temporaire à remplacer d'abord. */
 export const totpVerifyResultSchema = z.object({
   next: z.enum(['done', 'password_change']),
+  /** Codes de secours créés avec la première application : affichés une seule fois. */
+  recoveryCodes: z.array(z.string()).optional(),
+  /** Connexion par code de secours : codes encore utilisables. */
+  recoveryRemaining: z.number().optional(),
 })
 export type TotpVerifyResult = z.infer<typeof totpVerifyResultSchema>
 
@@ -114,6 +118,30 @@ export const totpDeviceAddSchema = z.object({
   currentPassword: z.string().min(1, { message: 'Mot de passe requis' }).max(256),
 })
 export type TotpDeviceAdd = z.infer<typeof totpDeviceAddSchema>
+
+/** Codes de secours par compte. */
+export const RECOVERY_CODE_COUNT = 10
+
+/** Connexion avec un code de secours (format `abcde-fghij`, tirets et espaces ignorés). */
+export const recoveryCodeSchema = z.object({
+  code: z.string().trim().min(8, { message: 'Code de secours incomplet' }).max(64),
+})
+export type RecoveryCodeInput = z.infer<typeof recoveryCodeSchema>
+
+export interface RecoveryCodesStatus {
+  total: number
+  remaining: number
+  createdAt: string | null
+}
+
+export const recoveryCodesRegenerateSchema = z.object({
+  currentPassword: z.string().min(1, { message: 'Mot de passe requis' }).max(256),
+})
+export type RecoveryCodesRegenerate = z.infer<typeof recoveryCodesRegenerateSchema>
+
+export interface RecoveryCodesIssued {
+  codes: string[]
+}
 
 export const totpDeviceRemoveSchema = z.object({
   currentPassword: z.string().min(1, { message: 'Mot de passe requis' }).max(256),

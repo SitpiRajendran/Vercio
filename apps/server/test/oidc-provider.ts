@@ -6,6 +6,9 @@ import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from 'jose'
  * Fournisseur OIDC minimal pour les tests (comportement aligné sur Keycloak) :
  * découverte, JWKS, échange de code avec PKCE, ID token et access token signés en RS256.
  */
+/** Secret du client attendu par le faux fournisseur. */
+export const CLIENT_SECRET = 'secret'
+
 export async function startFakeOidcProvider(clientId: string) {
   const { publicKey, privateKey } = await generateKeyPair('RS256')
   const jwk = { ...(await exportJWK(publicKey)), kid: 'test', alg: 'RS256', use: 'sig' }
@@ -36,6 +39,19 @@ export async function startFakeOidcProvider(clientId: string) {
 
   server.post('/realms/test/token', async (request, reply) => {
     const body = request.body as Record<string, string>
+    // « Client credentials » : identifiants vérifiés, puis refus comme un client Keycloak sans
+    // compte de service (le cas normal pour Vercio).
+    if (body.grant_type === 'client_credentials') {
+      // client_secret_post (par défaut d'openid-client) ou client_secret_basic.
+      const basic = request.headers.authorization?.replace(/^Basic /, '')
+      const [id, secret] = basic
+        ? Buffer.from(basic, 'base64').toString().split(':').map(decodeURIComponent)
+        : [body.client_id, body.client_secret]
+      if (id !== clientId || secret !== CLIENT_SECRET) {
+        return reply.code(401).send({ error: 'invalid_client' })
+      }
+      return reply.code(400).send({ error: 'unauthorized_client' })
+    }
     const entry = body.code ? codes.get(body.code) : undefined
     if (!entry || !body.code_verifier) return reply.code(400).send({ error: 'invalid_grant' })
     const challenge = createHash('sha256').update(body.code_verifier).digest('base64url')

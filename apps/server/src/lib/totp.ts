@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { totpClockCorrection } from './clock.js'
 
 /** TOTP (RFC 6238) : SHA-1, 6 chiffres, pas de 30 s — le format attendu par toutes les applis. */
 const PERIOD_SECONDS = 30
@@ -9,7 +10,8 @@ export function generateTotpSecret(): string {
   return base32Encode(randomBytes(20))
 }
 
-export function currentTimeStep(now = Date.now()): number {
+/** Pas courant ; sans `now`, l'heure du serveur corrigée du décalage mesuré (voir clock.ts). */
+export function currentTimeStep(now = Date.now() + totpClockCorrection()): number {
   return Math.floor(now / 1000 / PERIOD_SECONDS)
 }
 
@@ -37,6 +39,28 @@ export function verifyTotp(
     if (options.lastUsedStep != null && candidate <= options.lastUsedStep) continue
     const expected = Buffer.from(totpCode(secret, candidate))
     if (timingSafeEqual(expected, Buffer.from(code))) return candidate
+  }
+  return null
+}
+
+/**
+ * Code valide, mais pour une heure éloignée de plus d'un pas (jusqu'à `range` pas) : l'horloge
+ * du serveur ou du téléphone est décalée. Renvoie le décalage en secondes (positif : le code
+ * vient du futur, l'horloge du serveur retarde), ou `null`. Ne connecte jamais : sert au message.
+ */
+export function totpClockOffset(
+  secret: string,
+  code: string,
+  options: { now?: number; range?: number } = {},
+): number | null {
+  if (!/^\d{6}$/.test(code)) return null
+  const step = currentTimeStep(options.now)
+  const range = options.range ?? 20
+  for (let distance = 2; distance <= range; distance++) {
+    for (const offset of [distance, -distance]) {
+      const expected = Buffer.from(totpCode(secret, step + offset))
+      if (timingSafeEqual(expected, Buffer.from(code))) return offset * PERIOD_SECONDS
+    }
   }
   return null
 }

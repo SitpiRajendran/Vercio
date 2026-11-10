@@ -68,7 +68,7 @@ export function ImportPicker({
               onClick={() => onChange(project)}
               className={cn(
                 'hover:border-foreground/30 rounded-lg border p-3 text-left transition-colors',
-                value?.name === project.name && 'border-primary ring-primary ring-1',
+                value?.name === project.name && 'border-brand ring-brand ring-1',
               )}
             >
               <p className="font-mono text-sm font-medium">{project.name}</p>

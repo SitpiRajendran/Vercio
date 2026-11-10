@@ -95,6 +95,22 @@ export async function startFakeGitLab(scopes = ['read_api', 'read_registry']) {
       committed_date: `2026-03-0${3 - index}T10:00:00Z`,
     })),
   )
+  server.get('/api/v4/projects/:id/pipelines', async (request) => {
+    const { ref, status } = request.query as { ref?: string; status?: string }
+    // Dernier pipeline réussi de main : celui du commit bbbb… (voir deploy).
+    return ref === 'main' && status === 'success'
+      ? [{ id: 7, sha: `bbbbbbbb${'0'.repeat(32)}` }]
+      : []
+  })
+  server.get('/api/v4/projects/:id/repository/commits/:sha', async (request) => {
+    const sha = (request.params as { sha: string }).sha
+    return {
+      id: sha,
+      title: `Commit ${sha.slice(0, 8)}`,
+      author_name: 'Bob',
+      committed_date: '2026-03-03T10:00:00Z',
+    }
+  })
   server.get('/api/v4/projects/:id/repository/commits/:sha/refs', async (request) => {
     // v0.9 n'est que sur la branche « legacy ».
     const sha = (request.params as { sha: string }).sha
@@ -266,6 +282,8 @@ export async function startFakeGitHub(options: { scopes?: string; enterprise?: b
  */
 export async function startFakeImageRegistry(images: Record<string, string>) {
   const server = Fastify()
+  /** Images « latest » avec le label OCI du commit (désactivable). */
+  const options = { revisionLabels: true }
   let base = ''
   const scopes: string[] = []
   server.get('/v2/', async (_request, reply) =>
@@ -322,8 +340,19 @@ export async function startFakeImageRegistry(images: Record<string, string>) {
     const key = Buffer.from((request.params as { id: string }).id, 'hex')
       .toString()
       .split('|')[0]!
-    return { created: images[key] ?? null, architecture: 'amd64' }
+    // Les images « latest » portent le commit de leur construction (label OCI).
+    return {
+      created: images[key] ?? null,
+      architecture: 'amd64',
+      ...(options.revisionLabels && key.endsWith(':latest')
+        ? {
+            config: {
+              Labels: { 'org.opencontainers.image.revision': `cccccccc${'0'.repeat(32)}` },
+            },
+          }
+        : {}),
+    }
   })
   base = await listen(server)
-  return { url: base, scopes, close: () => server.close() }
+  return { url: base, scopes, options, close: () => server.close() }
 }

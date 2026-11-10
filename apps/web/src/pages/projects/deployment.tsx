@@ -114,6 +114,24 @@ function DeploymentView({
                 {summary.username ? ` par ${summary.username}` : ''}
               </Info>
               <Info label="Version">{deployedLabel(summary)}</Info>
+              {Object.values(summary.versions)
+                .flatMap((version) => (version.commit ? [version.commit] : []))
+                .map((commit) => (
+                  <Info key={commit.sha} label="Commit">
+                    <a
+                      href={commit.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-xs underline-offset-4 hover:underline"
+                    >
+                      {commit.shortSha.slice(0, 7)}
+                    </a>{' '}
+                    {commit.message}
+                    {commit.author && (
+                      <span className="text-muted-foreground block text-xs">{commit.author}</span>
+                    )}
+                  </Info>
+                ))}
               {duration(summary) && <Info label="Durée">{duration(summary)}</Info>}
               {Object.keys(summary.images).length > 0 && (
                 <Info label="Images">

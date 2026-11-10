@@ -74,6 +74,9 @@ export function SystemInfoTab() {
           <Row label="Node.js">{data.vercio.node}</Row>
           <Row label="Système">{data.vercio.platform}</Row>
           <Row label="Fuseau horaire">{data.vercio.timezone}</Row>
+          <Row label="Horloge">
+            <ClockState clock={data.clock} updateCheck={data.vercio.updateCheck} />
+          </Row>
           <Row label="Adresse publique">{data.vercio.publicUrl}</Row>
           <Row label="Dossier de données">{data.vercio.dataDir}</Row>
           <Row label="Connexion">
@@ -182,6 +185,28 @@ function Section({
         <dl className="divide-y text-sm">{children}</dl>
       </CardContent>
     </Card>
+  )
+}
+
+/** Décalage de l'horloge du serveur par rapport à GitHub, mesuré à la recherche de mises à jour. */
+function ClockState({ clock, updateCheck }: { clock: SystemInfo['clock']; updateCheck: boolean }) {
+  if (!clock) {
+    return (
+      <span className="text-muted-foreground">
+        {updateCheck ? 'pas encore mesurée' : 'non mesurée (recherche de mises à jour désactivée)'}
+      </span>
+    )
+  }
+  const offset = clock.offsetSeconds
+  const size = Math.abs(offset)
+  if (size < 5) return <>à l’heure</>
+  const label = `${offset < 0 ? 'en avance' : 'en retard'} de ${size} s`
+  return (
+    <span className={size >= 20 ? 'text-destructive' : undefined}>
+      {label}
+      {clock.corrected && ' · compensé pour la double authentification'}
+      {size >= 20 && ' · activez NTP : timedatectl set-ntp true'}
+    </span>
   )
 }
 

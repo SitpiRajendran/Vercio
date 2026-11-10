@@ -1,8 +1,16 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { AlertCircle, Boxes, KeyRound, Loader2, ShieldCheck } from 'lucide-react'
-import { PASSWORD_MIN_LENGTH, SSO_ERRORS, type SsoError } from '@vercio/shared'
+import { AlertCircle, KeyRound, LifeBuoy, Loader2, ShieldCheck } from 'lucide-react'
+import { toast } from 'sonner'
+import {
+  PASSWORD_MIN_LENGTH,
+  SSO_ERRORS,
+  type SsoError,
+  type TotpVerifyResult,
+} from '@vercio/shared'
+import { RecoveryCodesList } from '@/components/layout/recovery-codes'
+import { VercioWordmark } from '@/components/layout/vercio-logo'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -13,6 +21,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp'
 import { Label } from '@/components/ui/label'
@@ -32,6 +41,9 @@ export function LoginPage() {
     refetchInterval: (query) => (query.state.status === 'error' ? 5000 : false),
   })
   const [step, setStep] = useState<Step>('credentials')
+  // Identifiant saisi : rappelé (caché) à l'étape du code pour que le gestionnaire de mots de
+  // passe propose le code TOTP du bon compte.
+  const [username, setUsername] = useState('')
 
   const ssoError = erreur && erreur in SSO_ERRORS ? SSO_ERRORS[erreur as SsoError] : null
   const config = authConfig.data
@@ -39,15 +51,17 @@ export function LoginPage() {
   return (
     <main className="flex min-h-svh items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6">
-        <div className="flex items-center justify-center gap-2">
-          <div className="bg-primary text-primary-foreground flex size-9 items-center justify-center rounded-lg">
-            <Boxes className="size-5" />
-          </div>
-          <span className="text-2xl font-semibold tracking-tight">Vercio</span>
+        <div className="flex items-center justify-center">
+          <VercioWordmark className="h-10 w-auto" />
         </div>
 
         {step === 'credentials' && config?.setupRequired && (
-          <FirstRun onNext={() => setStep('totp_setup')} />
+          <FirstRun
+            onNext={(name) => {
+              setUsername(name)
+              setStep('totp_setup')
+            }}
+          />
         )}
 
         {step === 'credentials' && !config?.setupRequired && (
@@ -66,7 +80,14 @@ export function LoginPage() {
                   onRetry={() => void authConfig.refetch()}
                 />
               )}
-              {config?.localEnabled && <CredentialsForm onNext={setStep} />}
+              {config?.localEnabled && (
+                <CredentialsForm
+                  onNext={(next, name) => {
+                    setUsername(name)
+                    setStep(next)
+                  }}
+                />
+              )}
               {config?.localEnabled && config.oidcEnabled && (
                 <div className="flex items-center gap-3">
                   <Separator className="flex-1" />
@@ -92,12 +113,14 @@ export function LoginPage() {
 
         {step === 'totp' && (
           <TotpVerify
+            username={username}
             onCancel={() => setStep('credentials')}
             onPasswordChange={() => setStep('password_change')}
           />
         )}
         {step === 'totp_setup' && (
           <TotpSetup
+            username={username}
             onCancel={() => setStep('credentials')}
             onPasswordChange={() => setStep('password_change')}
           />
@@ -137,26 +160,40 @@ function ServerUnavailable({
   )
 }
 
-function CredentialsForm({ onNext }: { onNext: (step: Step) => void }) {
+function CredentialsForm({ onNext }: { onNext: (step: Step, username: string) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const login = useMutation({
     mutationFn: api.login,
-    onSuccess: ({ next }) => onNext(next),
+    onSuccess: ({ next }) => onNext(next, username.trim()),
   })
 
   function onSubmit(event: FormEvent) {
     event.preventDefault()
-    login.mutate({ username, password })
+    login.mutate({ username: username.trim(), password })
   }
 
+  // `name`, `method` et `action` : les gestionnaires de mots de passe (1Password, Bitwarden,
+  // navigateurs) reconnaissent ainsi un vrai formulaire de connexion. L'envoi reste en JavaScript.
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form
+      id="login"
+      name="login"
+      method="post"
+      action="/api/auth/login"
+      onSubmit={onSubmit}
+      className="space-y-4"
+    >
       <div className="space-y-2">
         <Label htmlFor="username">Identifiant</Label>
         <Input
           id="username"
+          name="username"
           autoComplete="username"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          autoFocus
           value={username}
           onChange={(event) => setUsername(event.target.value)}
           required
@@ -166,6 +203,7 @@ function CredentialsForm({ onNext }: { onNext: (step: Step) => void }) {
         <Label htmlFor="password">Mot de passe</Label>
         <Input
           id="password"
+          name="password"
           type="password"
           autoComplete="current-password"
           value={password}
@@ -193,44 +231,89 @@ function useEnterApp() {
   }
 }
 
-/** Saisie du code à 6 chiffres ; valide automatiquement au 6e chiffre. */
-function useTotpSubmit(onPasswordChange: () => void) {
+/** Second facteur validé : mot de passe temporaire à remplacer, ou entrée dans l'application. */
+function useFinishLogin(onPasswordChange: () => void) {
   const enterApp = useEnterApp()
+  return async ({ next }: TotpVerifyResult) => {
+    if (next === 'password_change') onPasswordChange()
+    else await enterApp()
+  }
+}
+
+/** Saisie du code à 6 chiffres ; valide automatiquement au 6e chiffre. */
+function useTotpSubmit(onVerified: (result: TotpVerifyResult) => void | Promise<void>) {
   const [code, setCode] = useState('')
+  // Code refusé : un gestionnaire de mots de passe qui remplit de nouveau le même code ne doit
+  // pas le renvoyer en boucle (chaque essai compte et bloque le compte au 5e).
+  const refused = useRef<string | null>(null)
   const verify = useMutation({
     mutationFn: api.totpVerify,
-    onSuccess: async ({ next }) => {
-      if (next === 'password_change') onPasswordChange()
-      else await enterApp()
+    onSuccess: onVerified,
+    onError: (_error, variables) => {
+      refused.current = variables.code
+      setCode('')
     },
-    onError: () => setCode(''),
   })
+  const submit = (value: string) => {
+    if (value.length !== 6 || verify.isPending || value === refused.current) return
+    verify.mutate({ code: value })
+  }
   const onChange = (value: string) => {
-    setCode(value)
-    if (value.length === 6) verify.mutate({ code: value })
+    const digits = value.replace(/\D/g, '').slice(0, 6)
+    setCode(digits)
+    submit(digits)
   }
   return { code, onChange, verify }
 }
 
+/**
+ * Code à 6 chiffres, dans un formulaire reconnu par les gestionnaires de mots de passe : champ
+ * `one-time-code` nommé `totp`, et l'identifiant du compte rappelé dans un champ caché pour que
+ * le code proposé soit celui du bon compte.
+ */
 function CodeInput({
+  username,
   code,
   onChange,
   disabled,
 }: {
+  username: string
   code: string
   onChange: (v: string) => void
   disabled: boolean
 }) {
   return (
-    <div className="flex justify-center">
+    <form
+      name="totp"
+      method="post"
+      action="/api/auth/totp/verify"
+      className="flex justify-center"
+      onSubmit={(event) => {
+        event.preventDefault()
+        onChange(code)
+      }}
+    >
+      <input
+        type="text"
+        name="username"
+        autoComplete="username"
+        value={username}
+        readOnly
+        tabIndex={-1}
+        aria-hidden
+        className="sr-only"
+      />
       <InputOTP
+        id="totp"
+        name="totp"
         maxLength={6}
         value={code}
         onChange={onChange}
-        disabled={disabled}
+        // Lecture seule plutôt que désactivé : un champ désactivé est ignoré par les gestionnaires.
+        readOnly={disabled}
         autoFocus
+        autoComplete="one-time-code"
         inputMode="numeric"
-        pattern="^[0-9]*$"
         aria-label="Code de vérification"
       >
         <InputOTPGroup>
@@ -239,17 +322,23 @@ function CodeInput({
           ))}
         </InputOTPGroup>
       </InputOTP>
-    </div>
+    </form>
   )
 }
 
 interface TotpStepProps {
+  username: string
   onCancel: () => void
   onPasswordChange: () => void
 }
 
-function TotpVerify({ onCancel, onPasswordChange }: TotpStepProps) {
-  const { code, onChange, verify } = useTotpSubmit(onPasswordChange)
+function TotpVerify({ username, onCancel, onPasswordChange }: TotpStepProps) {
+  const finish = useFinishLogin(onPasswordChange)
+  const { code, onChange, verify } = useTotpSubmit(finish)
+  const [recovery, setRecovery] = useState(false)
+  if (recovery) {
+    return <RecoveryLogin onFinish={finish} onBack={() => setRecovery(false)} />
+  }
   return (
     <Card>
       <CardHeader>
@@ -262,10 +351,19 @@ function TotpVerify({ onCancel, onPasswordChange }: TotpStepProps) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <CodeInput code={code} onChange={onChange} disabled={verify.isPending} />
+        <CodeInput
+          username={username}
+          code={code}
+          onChange={onChange}
+          disabled={verify.isPending}
+        />
         {verify.error && <ErrorAlert>{verify.error.message}</ErrorAlert>}
       </CardContent>
-      <CardFooter>
+      <CardFooter className="flex-col gap-2">
+        <Button variant="link" className="w-full" onClick={() => setRecovery(true)}>
+          <LifeBuoy />
+          Utiliser un code de secours
+        </Button>
         <Button variant="ghost" className="w-full" onClick={onCancel}>
           Retour
         </Button>
@@ -274,14 +372,163 @@ function TotpVerify({ onCancel, onPasswordChange }: TotpStepProps) {
   )
 }
 
-function TotpSetup({ onCancel, onPasswordChange }: TotpStepProps) {
+/** Code de secours à la place du code TOTP (application perdue, horloge décalée…). */
+function RecoveryLogin({
+  onFinish,
+  onBack,
+}: {
+  onFinish: (result: TotpVerifyResult) => Promise<void>
+  onBack: () => void
+}) {
+  const [code, setCode] = useState('')
+  const verify = useMutation({
+    mutationFn: api.recoveryCodes.verify,
+    onSuccess: async (result) => {
+      const remaining = result.recoveryRemaining ?? 0
+      if (remaining <= 3) {
+        toast.warning(
+          remaining === 0
+            ? 'Plus aucun code de secours : générez-en de nouveaux dans « Double authentification »'
+            : `Plus que ${remaining} code${remaining > 1 ? 's' : ''} de secours : pensez à en générer de nouveaux`,
+          { duration: 10_000 },
+        )
+      }
+      await onFinish(result)
+    },
+  })
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault()
+    verify.mutate({ code })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <LifeBuoy className="size-5" />
+          Code de secours
+        </CardTitle>
+        <CardDescription>
+          Saisissez l’un des codes de secours obtenus en activant la double authentification. Chaque
+          code ne sert qu’une fois.
+        </CardDescription>
+      </CardHeader>
+      <form onSubmit={onSubmit}>
+        <CardContent className="space-y-4">
+          <Input
+            id="recovery-code"
+            name="recovery-code"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            autoFocus
+            placeholder="abcde-fghij"
+            className="text-center font-mono tracking-wide"
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            aria-label="Code de secours"
+          />
+          {verify.error && <ErrorAlert>{verify.error.message}</ErrorAlert>}
+        </CardContent>
+        <CardFooter className="mt-6 flex-col gap-2">
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={verify.isPending || code.replace(/[^a-z0-9]/gi, '').length < 8}
+          >
+            {verify.isPending && <Loader2 className="animate-spin" />}
+            Se connecter
+          </Button>
+          <Button type="button" variant="ghost" className="w-full" onClick={onBack}>
+            Retour au code de l’application
+          </Button>
+        </CardFooter>
+      </form>
+    </Card>
+  )
+}
+
+/** Codes de secours créés avec la première application : affichés une seule fois. */
+function RecoveryCodesStep({
+  codes,
+  username,
+  onContinue,
+}: {
+  codes: string[]
+  username: string
+  onContinue: () => Promise<void>
+}) {
+  const [saved, setSaved] = useState(false)
+  const [busy, setBusy] = useState(false)
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <LifeBuoy className="size-5" />
+          Vos codes de secours
+        </CardTitle>
+        <CardDescription>
+          Si votre application d’authentification est perdue ou refuse vos codes, chacun de ces
+          codes permet de vous connecter une fois. Gardez-les dans votre gestionnaire de mots de
+          passe ou sur papier : ils ne seront plus affichés.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <RecoveryCodesList codes={codes} username={username} />
+        <label className="flex items-start gap-2 text-sm">
+          <Checkbox
+            checked={saved}
+            onCheckedChange={(value) => setSaved(value === true)}
+            className="mt-0.5"
+          />
+          J’ai mis ces codes en lieu sûr
+        </label>
+      </CardContent>
+      <CardFooter>
+        <Button
+          className="w-full"
+          disabled={!saved || busy}
+          onClick={() => {
+            setBusy(true)
+            void onContinue().finally(() => setBusy(false))
+          }}
+        >
+          {busy && <Loader2 className="animate-spin" />}
+          Continuer
+        </Button>
+      </CardFooter>
+    </Card>
+  )
+}
+
+function TotpSetup({ username, onCancel, onPasswordChange }: TotpStepProps) {
   const setup = useMutation({ mutationFn: api.totpSetup })
-  const { code, onChange, verify } = useTotpSubmit(onPasswordChange)
+  const finish = useFinishLogin(onPasswordChange)
+  // Codes de secours reçus à l'enrôlement : montrés avant d'aller plus loin.
+  const [enrolled, setEnrolled] = useState<TotpVerifyResult | null>(null)
+  const { code, onChange, verify } = useTotpSubmit((result) =>
+    result.recoveryCodes?.length ? setEnrolled(result) : finish(result),
+  )
   const { mutate } = setup
+  // Une seule demande de clé par écran (React relance les effets en développement).
+  const requested = useRef(false)
 
   useEffect(() => {
+    if (requested.current) return
+    requested.current = true
     mutate()
   }, [mutate])
+
+  if (enrolled?.recoveryCodes) {
+    return (
+      <RecoveryCodesStep
+        codes={enrolled.recoveryCodes}
+        username={username}
+        onContinue={() => finish(enrolled)}
+      />
+    )
+  }
 
   return (
     <Card>
@@ -313,7 +560,12 @@ function TotpSetup({ onCancel, onPasswordChange }: TotpStepProps) {
             </div>
             <Separator />
             <p className="text-center text-sm">Puis saisissez le code généré :</p>
-            <CodeInput code={code} onChange={onChange} disabled={verify.isPending} />
+            <CodeInput
+              username={username}
+              code={code}
+              onChange={onChange}
+              disabled={verify.isPending}
+            />
             {verify.error && <ErrorAlert>{verify.error.message}</ErrorAlert>}
           </>
         )}
@@ -331,13 +583,16 @@ function TotpSetup({ onCancel, onPasswordChange }: TotpStepProps) {
  * Premier lancement : création du premier administrateur. Le code d'installation (fichier .env
  * ou journal du serveur) prouve que la personne a accès au serveur.
  */
-function FirstRun({ onNext }: { onNext: () => void }) {
+function FirstRun({ onNext }: { onNext: (username: string) => void }) {
   const [setupCode, setSetupCode] = useState('')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
-  const create = useMutation({ mutationFn: api.firstRun, onSuccess: onNext })
+  const create = useMutation({
+    mutationFn: api.firstRun,
+    onSuccess: () => onNext(username),
+  })
   const fieldError = (field: string) =>
     create.error instanceof ApiError && create.error.field === field ? create.error.message : null
   const otherError =

@@ -44,23 +44,34 @@ jobs:
             parents="[\"$head\"]"
           fi
 
-          # Même arbre que la branche poussée ; ni auteur ni signature fournis : GitHub signe.
-          sha="$(jq -n \
-            --arg message "$(git log -1 --format=%B)" \
-            --arg tree "$(git rev-parse 'HEAD^{tree}')" \
-            --argjson parents "$parents" \
-            '{message: $message, tree: $tree, parents: $parents}' \
-            | gh api "$repo/git/commits" --input - --jq .sha)"
+          # Même arbre et même auteur que le commit poussé ; sans committer ni signature fournis,
+          # GitHub est le committer et signe (Verified), comme pour un commit fait sur le site.
+          create() {
+            jq -n \
+              --arg message "$(git log -1 --format=%B)" \
+              --arg tree "$(git rev-parse 'HEAD^{tree}')" \
+              --argjson parents "$parents" \
+              --argjson author "$1" \
+              '{message: $message, tree: $tree, parents: $parents} + (if $author then {author: $author} else {} end)' \
+              | gh api "$repo/git/commits" --input - --jq .sha
+          }
+          verified() { gh api "$repo/commits/$1" --jq .commit.verification.verified; }
+          author="$(jq -n --arg name "$(git log -1 --format=%an)" --arg email "$(git log -1 --format=%ae)" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{name: $name, email: $email, date: $date}')"
+          sha="$(create "$author")"
+          # Signature vérifiée avant de toucher à main ; sinon, commit au nom du bot (toujours signé).
+          if [ "$(verified "$sha")" != true ]; then
+            echo "::warning::Commit au nom de $(git log -1 --format=%an) non signé : publication au nom de github-actions"
+            sha="$(create null)"
+          fi
+          [ "$(verified "$sha")" = true ] || { echo "Le commit n'est pas signé par GitHub" >&2; exit 1; }
+          echo "Commit $sha (Verified)"
           if [ -n "$head" ]; then
             gh api -X PATCH "$repo/git/refs/heads/main" -f sha="$sha" -F force=true >/dev/null
           else
             gh api "$repo/git/refs" -f ref=refs/heads/main -f sha="$sha" >/dev/null
           fi
           gh api -X DELETE "$repo/git/refs/heads/$BRANCH"
-
-          verified="$(gh api "$repo/commits/$sha" --jq .commit.verification.verified)"
-          echo "Commit $sha (Verified : $verified)"
-          [ "$verified" = true ] || { echo "Le commit n'est pas signé par GitHub" >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

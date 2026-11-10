@@ -152,7 +152,7 @@ export function WorkbenchProvider({ children }: { children: ReactNode }) {
                   key={tab.key}
                   className={cn(
                     'flex shrink-0 items-center border-b-2 border-transparent',
-                    tab.key === active && size !== 'min' && 'border-primary',
+                    tab.key === active && size !== 'min' && 'border-brand',
                   )}
                 >
                   <button

@@ -30,9 +30,11 @@ export interface GitProviderClient {
   listCommits(repository: string, branch: string, limit: number): Promise<GitTag[]>
   /** Tags du dépôt, les plus récents en premier quand le fournisseur le permet. */
   listTags(repository: string): Promise<GitTag[]>
-  /** Complète un tag dont le fournisseur ne donne pas le commit (GitHub). */
+  /** Message, auteur et date d'un commit. */
   commitDetails(repository: string, sha: string): Promise<Partial<GitTag>>
   isCommitOnBranch(repository: string, sha: string, branch: string): Promise<boolean>
+  /** Commit du dernier pipeline (GitLab) ou workflow (GitHub) réussi sur une branche ou un tag. */
+  lastSuccessfulBuild(repository: string, ref: string): Promise<string | null>
   commitUrl(repository: string, sha: string): string
   pipelineUrl(repository: string, ref: string): string
   /**
@@ -77,6 +79,7 @@ export function gitProviderClient(settings: {
       listTags: (repository) => client.listTags(repository),
       listCommits: (repository, branch, limit) => client.listCommits(repository, branch, limit),
       commitDetails: (repository, sha) => client.commitDetails(repository, sha),
+      lastSuccessfulBuild: (repository, ref) => client.lastSuccessfulBuild(repository, ref),
       isCommitOnBranch: (repository, sha, branch) =>
         client.isCommitOnBranch(repository, sha, branch),
       commitUrl: (repository, sha) => client.commitUrl(repository, sha),
@@ -101,7 +104,8 @@ export function gitProviderClient(settings: {
     registryImages: (repository) => client.registryImages(repository),
     listTags: (repository) => client.listTags(repository),
     listCommits: (repository, branch, limit) => client.listCommits(repository, branch, limit),
-    commitDetails: async () => ({}),
+    commitDetails: (repository, sha) => client.commitDetails(repository, sha),
+    lastSuccessfulBuild: (repository, ref) => client.lastSuccessfulBuild(repository, ref),
     isCommitOnBranch: (repository, sha, branch) => client.isCommitOnBranch(repository, sha, branch),
     commitUrl: (repository, sha) => client.commitUrl(repository, sha),
     pipelineUrl: (repository, ref) => client.pipelineUrl(repository, ref),

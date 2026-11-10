@@ -17,6 +17,8 @@ describe.skipIf(!TEST_DATABASE_URL)('API — compte local', () => {
   let db: Database
   let close: () => Promise<void>
   let secret: string
+  /** Codes de secours remis à l'enrôlement. */
+  let recovery: string[]
   const clock = controlledClock()
   /** Mot de passe choisi à la première connexion, à la place de celui de l'installation. */
   const NEW_PASSWORD = 'nouveau-mot-de-passe-solide'
@@ -101,7 +103,11 @@ describe.skipIf(!TEST_DATABASE_URL)('API — compte local', () => {
 
     // Le mot de passe d'installation est temporaire : pas de session avant de l'avoir remplacé.
     const ok = await post('/api/auth/totp/verify', { code: totpCode(secret, clock.step()) }, mfa)
-    expect(ok.json()).toEqual({ next: 'password_change' })
+    expect(ok.json()).toMatchObject({ next: 'password_change' })
+    recovery = ok.json().recoveryCodes
+    expect(recovery).toHaveLength(10)
+    expect(new Set(recovery).size).toBe(10)
+    recovery.forEach((code) => expect(code).toMatch(/^[a-z2-9]{5}-[a-z2-9]{5}$/))
     expect(ok.cookies.find((c) => c.name === '__Host-vercio_session')).toBeUndefined()
     const ticket = cookieValue(ok, '__Secure-vercio_mfa')
 
@@ -132,6 +138,65 @@ describe.skipIf(!TEST_DATABASE_URL)('API — compte local', () => {
       cookieValue(first, '__Secure-vercio_mfa'),
     )
     expect(replay.statusCode).toBe(401)
+    // Message explicite : ce n'est pas une faute de frappe, il faut attendre le code suivant.
+    expect(replay.json().error).toMatch(/déjà d’être utilisé/)
+  })
+
+  it('signale une horloge décalée au lieu d’un simple code invalide', async () => {
+    const first = await post('/api/auth/login', { username: 'admin', password: NEW_PASSWORD })
+    const response = await post(
+      '/api/auth/totp/verify',
+      { code: totpCode(secret, clock.step() + 10) },
+      cookieValue(first, '__Secure-vercio_mfa'),
+    )
+    expect(response.statusCode).toBe(401)
+    expect(response.json().error).toMatch(/environ 5 min/)
+  })
+
+  it('connecte avec un code de secours, une seule fois', async () => {
+    clock.tick()
+    const first = await post('/api/auth/login', { username: 'admin', password: NEW_PASSWORD })
+    const mfa = cookieValue(first, '__Secure-vercio_mfa')
+    // Saisie approximative tolérée : majuscules, espaces.
+    const typed = recovery[0]!.toUpperCase().replace('-', ' ')
+    const ok = await post('/api/auth/totp/recovery/verify', { code: typed }, mfa)
+    expect(ok.json()).toEqual({ next: 'done', recoveryRemaining: 9 })
+    expect(ok.cookies.find((c) => c.name === '__Host-vercio_session')).toBeDefined()
+
+    const second = await post('/api/auth/login', { username: 'admin', password: NEW_PASSWORD })
+    const again = await post(
+      '/api/auth/totp/recovery/verify',
+      { code: recovery[0] },
+      cookieValue(second, '__Secure-vercio_mfa'),
+    )
+    expect(again.statusCode).toBe(401)
+    expect(again.json().error).toMatch(/déjà utilisé/)
+  })
+
+  it('régénère les codes de secours, les anciens ne fonctionnent plus', async () => {
+    const cookie = await login()
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/auth/totp/recovery',
+      headers: { cookie },
+    })
+    expect(status.json()).toMatchObject({ total: 10, remaining: 9 })
+
+    const refused = await post('/api/auth/totp/recovery', { currentPassword: 'mauvais' }, cookie)
+    expect(refused.statusCode).toBe(400)
+    const fresh = await post('/api/auth/totp/recovery', { currentPassword: NEW_PASSWORD }, cookie)
+    expect(fresh.json().codes).toHaveLength(10)
+
+    const first = await post('/api/auth/login', { username: 'admin', password: NEW_PASSWORD })
+    const old = await post(
+      '/api/auth/totp/recovery/verify',
+      { code: recovery[1] },
+      cookieValue(first, '__Secure-vercio_mfa'),
+    )
+    expect(old.statusCode).toBe(401)
+    recovery = fresh.json().codes
+    // Un succès remet à zéro le compteur d'échecs (sans quoi les tests suivants seraient bloqués).
+    await login()
   })
 
   it('refuse un ticket TOTP falsifié', async () => {

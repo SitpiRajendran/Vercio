@@ -40,7 +40,7 @@ export function UpdateNotice({ onOpen }: { onOpen: () => void }) {
     <SidebarMenuButton
       onClick={onOpen}
       tooltip={`Vercio ${status.data.latest!.version} disponible`}
-      className="text-primary hover:text-primary bg-primary/10 hover:bg-primary/15"
+      className="text-brand hover:text-brand bg-brand/10 hover:bg-brand/15"
     >
       <ArrowUpCircle />
       <span>Vercio {status.data.latest!.version} disponible</span>

@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Plus, Smartphone, Trash2 } from 'lucide-react'
+import { LifeBuoy, Loader2, Plus, RefreshCw, Smartphone, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { MAX_TOTP_DEVICES, type TotpDeviceView } from '@vercio/shared'
+import { RecoveryCodesList } from '@/components/layout/recovery-codes'
+import { SidebarMenuButton } from '@/components/ui/sidebar'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -20,6 +22,34 @@ import { api } from '@/lib/api'
 import { formatDateTime, formatRelative } from '@/lib/format'
 
 const QUERY_KEY = ['totp-devices']
+const RECOVERY_KEY = ['totp-recovery']
+
+/**
+ * Rappel dans la barre latérale : compte local sans code de secours (double authentification
+ * activée avant leur arrivée, ou tous utilisés). Ouvre la gestion de la double authentification.
+ */
+export function RecoveryNotice() {
+  const status = useQuery({ queryKey: RECOVERY_KEY, queryFn: api.recoveryCodes.status })
+  const [open, setOpen] = useState(false)
+  const missing = status.data?.remaining === 0
+  // Le dialogue reste ouvert après la génération : les nouveaux codes doivent s'afficher.
+  if (!missing && !open) return null
+  return (
+    <>
+      {missing && (
+        <SidebarMenuButton
+          onClick={() => setOpen(true)}
+          tooltip="Aucun code de secours"
+          className="text-warning hover:text-warning bg-warning/10 hover:bg-warning/15"
+        >
+          <LifeBuoy />
+          <span>Créer vos codes de secours</span>
+        </SidebarMenuButton>
+      )}
+      {open && <TotpDevicesDialog onClose={() => setOpen(false)} />}
+    </>
+  )
+}
 
 /**
  * Applications d'authentification du compte connecté : liste, ajout, suppression.
@@ -27,8 +57,12 @@ const QUERY_KEY = ['totp-devices']
  */
 export function TotpDevicesDialog({ onClose }: { onClose: () => void }) {
   const devices = useQuery({ queryKey: QUERY_KEY, queryFn: api.totpDevices.list })
+  const recovery = useQuery({ queryKey: RECOVERY_KEY, queryFn: api.recoveryCodes.status })
   const [mode, setMode] = useState<
-    { kind: 'list' } | { kind: 'add' } | { kind: 'remove'; device: TotpDeviceView }
+    | { kind: 'list' }
+    | { kind: 'add' }
+    | { kind: 'remove'; device: TotpDeviceView }
+    | { kind: 'recovery' }
   >({ kind: 'list' })
   const back = () => setMode({ kind: 'list' })
   const list = devices.data ?? []
@@ -38,6 +72,7 @@ export function TotpDevicesDialog({ onClose }: { onClose: () => void }) {
       <DialogContent>
         {mode.kind === 'add' && <AddDevice onDone={back} />}
         {mode.kind === 'remove' && <RemoveDevice device={mode.device} onDone={back} />}
+        {mode.kind === 'recovery' && <RegenerateRecoveryCodes onDone={back} />}
         {mode.kind === 'list' && (
           <>
             <DialogHeader>
@@ -97,6 +132,29 @@ export function TotpDevicesDialog({ onClose }: { onClose: () => void }) {
                 avant de supprimer l’ancienne.
               </p>
             )}
+            <div className="flex items-center gap-3 rounded-lg border p-3">
+              <LifeBuoy className="text-muted-foreground size-4 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">Codes de secours</p>
+                <p
+                  className={
+                    recovery.data && recovery.data.remaining <= 3
+                      ? 'text-destructive text-xs'
+                      : 'text-muted-foreground text-xs'
+                  }
+                >
+                  {!recovery.data
+                    ? '…'
+                    : recovery.data.total === 0
+                      ? 'Aucun : générez-en pour ne pas perdre l’accès'
+                      : `${recovery.data.remaining} sur ${recovery.data.total} encore utilisables`}
+                </p>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => setMode({ kind: 'recovery' })}>
+                <RefreshCw />
+                {recovery.data?.total ? 'Régénérer' : 'Générer'}
+              </Button>
+            </div>
             <DialogFooter>
               <Button variant="ghost" onClick={onClose}>
                 Fermer
@@ -279,6 +337,76 @@ function RemoveDevice({ device, onDone }: { device: TotpDeviceView; onDone: () =
         <Button type="submit" variant="destructive" disabled={remove.isPending || !currentPassword}>
           {remove.isPending && <Loader2 className="animate-spin" />}
           Supprimer
+        </Button>
+      </DialogFooter>
+    </form>
+  )
+}
+
+/** Nouveaux codes de secours (mot de passe demandé) : les anciens ne fonctionnent plus. */
+function RegenerateRecoveryCodes({ onDone }: { onDone: () => void }) {
+  const queryClient = useQueryClient()
+  const [currentPassword, setCurrentPassword] = useState('')
+  const regenerate = useMutation({
+    mutationFn: () => api.recoveryCodes.regenerate(currentPassword),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: RECOVERY_KEY }),
+  })
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault()
+    regenerate.mutate()
+  }
+
+  if (regenerate.data) {
+    return (
+      <div className="space-y-4">
+        <DialogHeader>
+          <DialogTitle>Nouveaux codes de secours</DialogTitle>
+          <DialogDescription>
+            Gardez-les dans votre gestionnaire de mots de passe ou sur papier : ils ne seront plus
+            affichés. Les anciens codes ne fonctionnent plus.
+          </DialogDescription>
+        </DialogHeader>
+        <RecoveryCodesList codes={regenerate.data.codes} />
+        <DialogFooter>
+          <Button onClick={onDone}>J’ai mis ces codes en lieu sûr</Button>
+        </DialogFooter>
+      </div>
+    )
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4">
+      <DialogHeader>
+        <DialogTitle>Codes de secours</DialogTitle>
+        <DialogDescription>
+          10 codes à usage unique, pour vous connecter si votre application d’authentification est
+          perdue ou refuse vos codes. Les codes précédents ne fonctionneront plus.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-1.5">
+        <Label htmlFor="recovery-password">Mot de passe actuel</Label>
+        <Input
+          id="recovery-password"
+          type="password"
+          autoComplete="current-password"
+          autoFocus
+          value={currentPassword}
+          onChange={(event) => setCurrentPassword(event.target.value)}
+        />
+      </div>
+      {regenerate.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{regenerate.error.message}</AlertDescription>
+        </Alert>
+      )}
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onDone}>
+          Retour
+        </Button>
+        <Button type="submit" disabled={regenerate.isPending || !currentPassword}>
+          {regenerate.isPending && <Loader2 className="animate-spin" />}
+          Générer les codes
         </Button>
       </DialogFooter>
     </form>

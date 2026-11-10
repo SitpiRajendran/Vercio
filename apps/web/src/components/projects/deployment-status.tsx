@@ -8,7 +8,7 @@ const STATUS: Record<
   { label: string; icon: LucideIcon; className: string; spin?: boolean }
 > = {
   queued: { label: 'En attente', icon: CircleDashed, className: 'text-muted-foreground' },
-  running: { label: 'En cours', icon: Loader2, className: 'text-primary', spin: true },
+  running: { label: 'En cours', icon: Loader2, className: 'text-brand', spin: true },
   succeeded: { label: 'Réussi', icon: CheckCircle2, className: 'text-success' },
   failed: { label: 'Échec', icon: XCircle, className: 'text-destructive' },
   rolled_back: {

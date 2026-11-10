@@ -134,6 +134,13 @@
       "when": 1792603170473,
       "tag": "0018_published_ports",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794252550419,
+      "tag": "0019_totp_recovery_codes",
+      "breakpoints": true
     }
   ]
 }

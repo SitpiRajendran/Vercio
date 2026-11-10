@@ -296,7 +296,7 @@ export function TopologyMap({
                           aria-pressed={selected === id}
                           className={cn(
                             'hover:bg-accent flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-opacity',
-                            selected === id && 'border-primary ring-primary ring-1',
+                            selected === id && 'border-brand ring-brand ring-1',
                             focus && focus !== id && !reachable.has(id) && 'opacity-40',
                             focus && reachable.has(id) && 'border-chart',
                           )}

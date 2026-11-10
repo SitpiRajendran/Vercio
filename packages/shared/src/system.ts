@@ -125,6 +125,17 @@ export interface SystemInfo {
     workingDir: string | null
     mounts: { source: string; destination: string }[]
   } | null
+  /**
+   * Horloge du serveur comparée à l'heure de GitHub (mesurée à la vérification des mises à
+   * jour) ; null tant qu'aucune mesure n'est faite. `corrected` : le décalage est compensé
+   * pour les codes de double authentification.
+   */
+  clock: {
+    offsetSeconds: number
+    measuredAt: string
+    source: string
+    corrected: boolean
+  } | null
   counts: {
     projects: number
     environments: number
