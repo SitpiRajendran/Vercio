@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Download, EyeOff, FileCode2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Download, EyeOff, FileCode2, Loader2, Pencil } from 'lucide-react'
+import { toast } from 'sonner'
 import type { ProjectView } from '@vercio/shared'
 import { CodeBlock } from '@/components/common/copy-field'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -8,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
 import { formatDateTime, formatRelative } from '@/lib/format'
 
@@ -21,7 +23,15 @@ function download(content: string, filename: string) {
 }
 
 /** Fichier Compose de l'environnement choisi : source, ajouts de Vercio, fichier final. */
-export function ComposeFileCard({ project, envId }: { project: ProjectView; envId: string }) {
+export function ComposeFileCard({
+  project,
+  envId,
+  canEdit,
+}: {
+  project: ProjectView
+  envId: string
+  canEdit: boolean
+}) {
   const environment = project.environments.find((env) => env.id === envId)
   const view = useQuery({
     queryKey: ['compose-file', envId],
@@ -109,7 +119,9 @@ export function ComposeFileCard({ project, envId }: { project: ProjectView; envI
                     ? 'Le fichier du dépôt, tel qu’il est aujourd’hui sur la branche de l’environnement.'
                     : 'Le fichier collé dans Vercio.'}
                 </p>
-                {data.source.content !== null ? (
+                {canEdit && project.compose.source === 'inline' ? (
+                  <InlineEditor project={project} />
+                ) : data.source.content !== null ? (
                   <FileView content={data.source.content} filename={`${prefix}-compose.yml`} />
                 ) : (
                   <Alert variant="destructive">
@@ -149,6 +161,74 @@ function FileView({ content, filename }: { content: string; filename: string }) 
         <Download />
         Télécharger
       </Button>
+    </div>
+  )
+}
+
+/** Fichier géré par Vercio (collé ou « service seul ») : lecture, puis modification. */
+function InlineEditor({ project }: { project: ProjectView }) {
+  const queryClient = useQueryClient()
+  const original = project.compose.source === 'inline' ? project.compose.content : ''
+  const [editing, setEditing] = useState(false)
+  const [content, setContent] = useState(original)
+  const save = useMutation({
+    mutationFn: () => api.projects.updateCompose(project.id, content),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries()
+      setContent(result.content)
+      setEditing(false)
+      toast.success('Fichier enregistré : redéployez pour l’appliquer')
+    },
+  })
+  if (!editing) {
+    return (
+      <div className="space-y-2">
+        <FileView content={original} filename={`${project.slug}-compose.yml`} />
+        <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+          <Pencil />
+          Modifier
+        </Button>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-2">
+      <Textarea
+        aria-label="Fichier Compose"
+        className="min-h-80 font-mono text-xs"
+        spellCheck={false}
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+      />
+      {save.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{save.error.message}</AlertDescription>
+        </Alert>
+      )}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          disabled={save.isPending || content === original}
+          onClick={() => save.mutate()}
+        >
+          {save.isPending && <Loader2 className="animate-spin" />}
+          Enregistrer
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setContent(original)
+            setEditing(false)
+          }}
+        >
+          Annuler
+        </Button>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Les valeurs secrètes ont leur place dans l’onglet Variables : écrivez{' '}
+        <code>{'${NOM}'}</code> dans le fichier.
+      </p>
     </div>
   )
 }

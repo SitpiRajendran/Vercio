@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { Plus } from 'lucide-react'
 import type { EnvironmentView, OverviewEnvironment, ProjectView } from '@vercio/shared'
 import { useContainerActions } from '@/components/containers/container-actions'
 import { ContainerList } from '@/components/containers/container-list'
@@ -7,7 +9,16 @@ import { ResourcesCard } from '@/components/containers/resources-card'
 import { ActivityList } from '@/components/events/activity-list'
 import { EnvironmentPorts } from '@/components/projects/environment-ports'
 import { EnvironmentNetworks } from '@/components/networks/environment-networks'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { AddServiceDialog } from '@/components/projects/add-service-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { EnvTarget } from '@/components/workbench/workbench'
 import { api } from '@/lib/api'
@@ -38,6 +49,7 @@ export function OverviewTab({
     select: (items) => items.filter((item) => item.environment.slug === environment.slug),
   })
   const last = environment.lastDeployment
+  const [adding, setAdding] = useState(false)
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
@@ -61,6 +73,14 @@ export function OverviewTab({
         )}
         <Card className="gap-3">
           <CardHeader>
+            {isAdmin && project.compose.source === 'inline' && (
+              <CardAction>
+                <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+                  <Plus />
+                  Ajouter un service
+                </Button>
+              </CardAction>
+            )}
             <CardTitle>Conteneurs</CardTitle>
             <CardDescription>
               Pastille, ports ouverts (lien, ou cadenas si l’accès est réservé à l’hôte), processeur
@@ -86,6 +106,13 @@ export function OverviewTab({
           </CardContent>
         </Card>
         <ResourcesCard projectId={project.id} envId={environment.id} />
+        {adding && (
+          <AddServiceDialog
+            project={project}
+            environment={environment}
+            onClose={() => setAdding(false)}
+          />
+        )}
       </div>
       <aside className="min-w-0 space-y-4">
         <Card className="gap-3">

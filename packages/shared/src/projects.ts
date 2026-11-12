@@ -356,6 +356,37 @@ export const variableKeySchema = z
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, { message: 'Nom de variable invalide' })
   .max(128)
 
+/** Nom d'un service ajouté depuis Vercio (devient aussi son nom DNS dans le projet). */
+export const composeServiceNameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/, {
+  message: 'Minuscules, chiffres, - et _ (40 caractères au plus, une lettre d’abord)',
+})
+
+/**
+ * Service ajouté à un projet dont le fichier Compose est géré par Vercio (collé ou « service
+ * seul »). Les valeurs secrètes deviennent des variables du projet, référencées par `${CLÉ}`.
+ */
+export const addComposeServiceSchema = z.object({
+  name: composeServiceNameSchema,
+  image: z.string().trim().min(1, { message: 'Image requise' }).max(255),
+  /** Port d'écoute dans le conteneur (joignable par les autres services du projet). */
+  port: z.number().int().min(1).max(65535).nullable().default(null),
+  environment: z
+    .array(z.object({ key: variableKeySchema, value: z.string().max(4096), secret: z.boolean() }))
+    .max(50)
+    .default([]),
+  /** Dossier de données conservé dans un volume (`/app`, `/data`…). */
+  dataPath: z
+    .string()
+    .regex(/^\/[^\s:]*$/, { message: 'Chemin absolu dans le conteneur, sans espace' })
+    .nullable()
+    .default(null),
+})
+export type AddComposeServiceInput = z.input<typeof addComposeServiceSchema>
+
+export const inlineComposeSchema = z.object({
+  content: z.string().min(1, { message: 'Fichier vide' }).max(200_000),
+})
+
 export const variablesInputSchema = z.object({
   variables: z
     .array(

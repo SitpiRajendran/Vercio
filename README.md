@@ -45,6 +45,7 @@ Vercio is made for small teams hosting a few websites or APIs on a server who wa
 - **Open ports** to the outside from the project page, with a « site temporarily unavailable » page instead of an error while a service restarts.
 - **Connect a service** of another project (database, Redis, API) in one window: each link gets its own network, so two applications using the same database cannot reach each other; for PostgreSQL, MySQL, MariaDB and MongoDB, Vercio can create a dedicated database and user, save the connection variable as a secret and redeploy.
 - **Environment variables**, encrypted, per project and per environment (production, staging…).
+- **Database explorer** for PostgreSQL, in the project's « Base de données » tab: tables, rows with sorting, search and pages, and an SQL console for administrators (read-only unless allowed, every query in the audit log). It goes through the database container: nothing to open.
 - **Backups** of databases (PostgreSQL, MySQL, MariaDB, MongoDB) and volumes to S3 or a folder: encrypted, scheduled, restorable from the interface. Vercio also backs itself up.
 - **Notifications** by email, Microsoft Teams or webhook.
 - **Accounts** with mandatory two-factor authentication (several authenticator apps, recovery codes, works with password managers), three roles, and optional Keycloak SSO (OpenID Connect) set up from the settings page.
@@ -129,7 +130,7 @@ To update by hand instead:
 docker compose pull && docker compose up -d
 ```
 
-Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.4` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
+Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.5` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
 
 ## Configuration
 

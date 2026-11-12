@@ -1,7 +1,9 @@
-import type { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply } from 'fastify'
 import { and, desc, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import {
+  addComposeServiceSchema,
+  inlineComposeSchema,
   composeProjectName,
   PROJECT_COLORS,
   PROJECT_ICONS,
@@ -24,6 +26,7 @@ import {
   type PublishedPortRule,
 } from '@vercio/shared'
 import { analyzeCompose } from '../compose/analyze.js'
+import { addService, ComposeEditError, pinInContent, serviceCount } from '../compose/edit.js'
 import { externalComposeProjects } from '../compose/imports.js'
 import type { HostDriver } from '../docker/host-driver.js'
 import type { Database } from '../db/client.js'
@@ -517,6 +520,110 @@ export const projectRoutes: FastifyPluginAsync<{
     }
   })
 
+  /** Fichier Compose géré par Vercio (collé ou « service seul ») : modifiable ici. */
+  async function inlineProject(id: string) {
+    const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1)
+    if (!project) throw new HttpError(404, 'Projet introuvable')
+    if (project.composeSource !== 'inline') {
+      throw new HttpError(
+        409,
+        'Le fichier Compose vient du dépôt : ajoutez le service dans le dépôt, Vercio le lira au prochain déploiement',
+      )
+    }
+    return project
+  }
+
+  /** Variables du projet (tous environnements) : celles qu'un « service seul » recevait toutes. */
+  async function projectVariableKeys(projectId: string) {
+    const rows = await db
+      .selectDistinct({ key: envVariables.key })
+      .from(envVariables)
+      .where(eq(envVariables.projectId, projectId))
+    return rows.map((row) => row.key).sort()
+  }
+
+  function editError(reply: FastifyReply, error: unknown) {
+    if (error instanceof ComposeEditError) {
+      return reply.code(400).send({ error: error.message, field: error.field })
+    }
+    return sendHttpError(reply, error)
+  }
+
+  /**
+   * Ajoute un service au fichier Compose géré par Vercio. Un projet « service seul » devient un
+   * projet Compose : son service garde ses variables, attribuées nommément.
+   */
+  app.post('/:id/compose/services', admin, async (request, reply) => {
+    const params = parseInput(idParams, request.params, reply)
+    const input = params && parseInput(addComposeServiceSchema, request.body, reply)
+    if (!params || !input) return
+    try {
+      const project = await inlineProject(params.id)
+      const pin = project.type === 'single' ? await projectVariableKeys(project.id) : null
+      const content = addService(project.composeInline ?? '', input, pin)
+      const analysis = analyzeCompose(content)
+      if (!analysis.services.some((service) => service.name === input.name)) {
+        throw new ComposeEditError('Service non reconnu après l’ajout')
+      }
+      await db.transaction(async (tx) => {
+        await tx
+          .update(projects)
+          .set({ composeInline: content, type: 'compose' })
+          .where(eq(projects.id, project.id))
+        for (const item of input.environment.filter((entry) => entry.secret)) {
+          const valueEnc = box.encrypt(item.value)
+          await tx
+            .insert(envVariables)
+            .values({
+              projectId: project.id,
+              environmentId: null,
+              key: item.key,
+              valueEnc,
+              secret: true,
+            })
+            .onConflictDoUpdate({
+              target: [envVariables.projectId, envVariables.environmentId, envVariables.key],
+              set: { valueEnc, secret: true },
+            })
+        }
+      })
+      await auditAction(db, request, 'project.compose.add_service', project.slug, {
+        service: input.name,
+        image: input.image,
+      })
+      return { content, type: 'compose' as const }
+    } catch (error) {
+      return editError(reply, error)
+    }
+  })
+
+  /** Modification à la main du fichier Compose géré par Vercio. */
+  app.put('/:id/compose', admin, async (request, reply) => {
+    const params = parseInput(idParams, request.params, reply)
+    const input = params && parseInput(inlineComposeSchema, request.body, reply)
+    if (!params || !input) return
+    try {
+      const project = await inlineProject(params.id)
+      let content = input.content
+      let type = project.type
+      // Plusieurs services dans un « service seul » : il devient un projet Compose.
+      if (type === 'single' && serviceCount(content) > 1) {
+        content = pinInContent(content, await projectVariableKeys(project.id))
+        type = 'compose'
+      }
+      const analysis = analyzeCompose(content)
+      if (!analysis.services.length) throw new ComposeEditError('Aucun service dans le fichier')
+      await db
+        .update(projects)
+        .set({ composeInline: content, type })
+        .where(eq(projects.id, project.id))
+      await auditAction(db, request, 'project.compose.update', project.slug, {})
+      return { content, type }
+    } catch (error) {
+      return editError(reply, error)
+    }
+  })
+
   app.put('/:id', admin, async (request, reply) => {
     const params = parseInput(idParams, request.params, reply)
     const input = params && parseInput(projectInputSchema, request.body, reply)
@@ -793,6 +900,15 @@ export const projectRoutes: FastifyPluginAsync<{
     const services = last?.compose
       ? analyzeCompose(last.compose).services.map((service) => service.name)
       : null
+    // Fichier géré par Vercio : un service tout juste ajouté compte déjà.
+    const [owner] = await db
+      .select({ source: projects.composeSource, inline: projects.composeInline })
+      .from(projects)
+      .where(eq(projects.id, params.id))
+      .limit(1)
+    if (services && owner?.source === 'inline' && owner.inline) {
+      for (const service of analyzeCompose(owner.inline).services) services.push(service.name)
+    }
     const unknown = services && input.ports.find((port) => !services.includes(port.service))
     if (unknown) {
       return reply.code(400).send({

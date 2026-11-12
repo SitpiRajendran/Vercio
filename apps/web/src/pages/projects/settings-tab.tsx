@@ -110,7 +110,7 @@ export function SettingsTab({
             title="Fichier Compose"
             description="En lecture seule : votre fichier, les ajouts de Vercio et le fichier final reçu par Docker au dernier déploiement. Les valeurs secrètes sont masquées."
           />
-          <ComposeFileCard project={project} envId={envId} />
+          <ComposeFileCard project={project} envId={envId} canEdit={can.isAdmin} />
         </section>
         <section
           id="sans-coupure"

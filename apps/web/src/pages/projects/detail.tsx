@@ -25,6 +25,7 @@ import { environmentStatus, TONE_DOT, TONE_TEXT, useOverview } from '@/lib/overv
 import { cn } from '@/lib/utils'
 import { BackupsTab } from './backups-tab'
 import { DeploymentsTab } from './deployments-tab'
+import { DatabaseTab, useDatabaseServices } from './database-tab'
 import { MapTab } from './map-tab'
 import { OverviewTab } from './overview-tab'
 import { SettingsTab } from './settings-tab'
@@ -37,6 +38,7 @@ const TABS = [
   'variables',
   'carte',
   'sauvegardes',
+  'base',
   'parametres',
 ] as const
 type Tab = (typeof TABS)[number]
@@ -167,6 +169,9 @@ function EnvironmentPage({
   const status = live ? environmentStatus(live) : null
   const services = [...new Set(live?.containers.map((container) => container.service))].sort()
   const [logService, setLogService] = useState<string | null>(null)
+  // Onglet « Base de données » : seulement si une base PostgreSQL est reconnue (rôle deployer).
+  const databases = useDatabaseServices(project.id, environment.id, can.canDeploy)
+  const hasDatabase = can.canDeploy && Boolean(databases.data?.length)
 
   return (
     <>
@@ -229,6 +234,7 @@ function EnvironmentPage({
             <TabsTrigger value="variables">Variables</TabsTrigger>
             <TabsTrigger value="carte">Carte</TabsTrigger>
             <TabsTrigger value="sauvegardes">Sauvegardes</TabsTrigger>
+            {hasDatabase && <TabsTrigger value="base">Base de données</TabsTrigger>}
             <TabsTrigger value="parametres">Paramètres</TabsTrigger>
           </StickyTabsList>
           <TabsContent value="apercu" className="pt-4">
@@ -273,6 +279,11 @@ function EnvironmentPage({
               can={can}
             />
           </TabsContent>
+          {hasDatabase && (
+            <TabsContent value="base" className="pt-4">
+              <DatabaseTab projectId={project.id} envId={environment.id} isAdmin={can.isAdmin} />
+            </TabsContent>
+          )}
           <TabsContent value="parametres" className="pt-4">
             <SettingsTab project={project} envId={environment.id} can={can} />
           </TabsContent>

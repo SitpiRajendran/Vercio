@@ -37,6 +37,7 @@ import { containerRoutes } from './routes/containers.js'
 import { deploymentRoutes } from './routes/deployments.js'
 import { eventRoutes } from './routes/events.js'
 import { hookRoutes, webhookAdminRoutes } from './routes/webhooks.js'
+import { databaseRoutes } from './routes/database.js'
 import { networkRoutes } from './routes/networks.js'
 import { systemRoutes } from './routes/system.js'
 import { userRoutes } from './routes/users.js'
@@ -248,6 +249,13 @@ export async function buildApp({
       await api.register(projectRoutes, { prefix: '/projects', db, box, versions, engine, host })
       await api.register(deploymentRoutes, { db, engine })
       await api.register(eventRoutes, { db })
+      await api.register(databaseRoutes, {
+        db,
+        host,
+        runner,
+        dockerSocket: config.DOCKER_SOCKET,
+        dataDir: config.VERCIO_DATA_DIR,
+      })
       await api.register(networkRoutes, {
         db,
         host,

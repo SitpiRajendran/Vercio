@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { and, desc, eq, isNull, lt, ne, or, sql } from 'drizzle-orm'
+import { parse as parseYaml } from 'yaml'
 import type { FastifyBaseLogger } from 'fastify'
 import {
   composeProjectName,
@@ -551,6 +552,8 @@ export class DeploymentEngine {
       let images: Record<string, string>
       let versions: DeploymentSummary['versions']
       const rules = (environment.publishedPorts as PublishedPortRule[]) ?? []
+      /** Retour arrière : variables transmises par nom à l'époque (« service seul » devenu Compose). */
+      let rolledPass: string[] | null = null
       if (deployment.rollbackOfId) {
         const [target] = await this.db
           .select()
@@ -560,6 +563,7 @@ export class DeploymentEngine {
         if (!target?.composeRendered) throw new DeployError('Déploiement de référence introuvable')
         await log(`▶ Retour à la version du ${target.createdAt.toLocaleString('fr-FR')}`)
         compose = target.composeRendered
+        rolledPass = passedVariables(target.composeOverride)
         images = target.digests as Record<string, string>
         versions = target.versions as DeploymentSummary['versions']
       } else {
@@ -632,7 +636,12 @@ export class DeploymentEngine {
           .filter((service) => service.restart !== null)
           .map((service) => service.name),
         sharedNetworks: networking,
-        passVariables: project.type === 'single' ? unused : [],
+        passVariables:
+          rolledPass !== null
+            ? rolledPass.filter((key) => key in variables)
+            : project.type === 'single'
+              ? unused
+              : [],
         explicitNetworks: analysis.services
           .filter((service) => service.networks !== null)
           .map((service) => service.name),
@@ -1704,4 +1713,26 @@ function insideDir(dir: string, path: string): string {
 async function writeFresh(path: string, content: string, mode = 0o600): Promise<void> {
   await rm(path, { force: true })
   await writeFile(path, content, { mode, flag: 'wx' })
+}
+
+/**
+ * Variables qu'un déploiement transmettait par leur nom (`environment: [CLÉ]` dans la surcharge
+ * de Vercio) : un retour arrière les transmet de même, même si le projet a changé de type depuis.
+ * null : surcharge absente ou illisible.
+ */
+export function passedVariables(override: string | null): string[] | null {
+  if (!override) return null
+  let document: { services?: Record<string, { environment?: unknown }> } | null
+  try {
+    document = parseYaml(override) as typeof document
+  } catch {
+    return null
+  }
+  const keys = new Set<string>()
+  for (const service of Object.values(document?.services ?? {})) {
+    if (Array.isArray(service?.environment)) {
+      for (const key of service.environment) if (typeof key === 'string') keys.add(key)
+    }
+  }
+  return [...keys]
 }

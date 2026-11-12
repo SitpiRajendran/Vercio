@@ -1,4 +1,12 @@
 import type {
+  DatabaseInfo,
+  DatabaseQueryInput,
+  DatabaseServiceView,
+  QueryResult,
+  TableInfo,
+  TableRows,
+  TableRowsQuery,
+  AddComposeServiceInput,
   AuthConfig,
   ChangePassword,
   BranchSummary,
@@ -268,6 +276,17 @@ export const api = {
     appearance: (id: string, input: Partial<ProjectAppearance>) =>
       request<ProjectView>(`/projects/${id}/appearance`, json('PUT', input)),
     get: (slug: string) => request<ProjectView>(`/projects/${encodeURIComponent(slug)}`),
+    /** Fichier Compose géré par Vercio : ajout d'un service, modification à la main. */
+    addService: (id: string, input: AddComposeServiceInput) =>
+      request<{ content: string; type: 'compose' | 'single' }>(
+        `/projects/${id}/compose/services`,
+        json('POST', input),
+      ),
+    updateCompose: (id: string, content: string) =>
+      request<{ content: string; type: 'compose' | 'single' }>(
+        `/projects/${id}/compose`,
+        json('PUT', { content }),
+      ),
     ports: (id: string, envId: string, input: EnvironmentPortsInput) =>
       request<ProjectView>(`/projects/${id}/environments/${envId}/ports`, json('PUT', input)),
     create: (input: CreateProjectInput) => request<ProjectView>('/projects', json('POST', input)),
@@ -353,6 +372,31 @@ export const api = {
     },
   },
 
+  database: {
+    services: (projectId: string, envId: string) =>
+      request<DatabaseServiceView[]>(`/projects/${projectId}/environments/${envId}/database`),
+    databases: (projectId: string, envId: string, service: string) =>
+      request<DatabaseInfo[]>(
+        `/projects/${projectId}/environments/${envId}/database/${encodeURIComponent(service)}/databases`,
+      ),
+    tables: (projectId: string, envId: string, service: string, database: string) =>
+      request<TableInfo[]>(
+        `/projects/${projectId}/environments/${envId}/database/${encodeURIComponent(service)}/tables?${new URLSearchParams({ database })}`,
+      ),
+    rows: (projectId: string, envId: string, service: string, query: TableRowsQuery) =>
+      request<TableRows>(
+        `/projects/${projectId}/environments/${envId}/database/${encodeURIComponent(service)}/rows?${new URLSearchParams(
+          Object.entries(query)
+            .filter(([, value]) => value !== undefined && value !== '')
+            .map(([key, value]) => [key, String(value)]),
+        )}`,
+      ),
+    query: (projectId: string, envId: string, service: string, input: DatabaseQueryInput) =>
+      request<QueryResult>(
+        `/projects/${projectId}/environments/${envId}/database/${encodeURIComponent(service)}/query`,
+        json('POST', input),
+      ),
+  },
   networks: {
     list: () => request<SharedNetworkView[]>('/networks'),
     create: (input: SharedNetworkInput) =>

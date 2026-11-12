@@ -4,6 +4,18 @@ All notable changes to Vercio are listed here. Versions follow [semantic version
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-12
+
+### Added
+
+- « Base de données » tab on projects with a PostgreSQL service: pick a database, browse its tables (estimated rows and size), read rows page by page with sorting and a search across all columns, NULL shown as such. Administrators get an SQL console: read-only by default (the session refuses writes, even after a COMMIT in the query), a box to allow changes, a 15 s limit, 1 000 rows at most, and every query in the audit log. psql commands (`\d`, `\!`…) are refused. Everything runs inside the database container with its own credentials: no port to open, no extra service.
+- « Ajouter un service » on projects whose Compose file is managed by Vercio (pasted or « service seul »): ready-made Drizzle Gateway and Adminer, or any image, with its port, variables (secret ones saved encrypted and referenced as `${NAME}`), a data folder, an optional port opened on the server and an immediate deployment. A « service seul » project becomes a Compose project: its service keeps its variables, named explicitly, and the new service only receives its own.
+- The Compose file of these projects can be edited by hand in Settings → « Fichier Compose ».
+
+### Fixed
+
+- Rolling back to a deployment made before a project changed type passes the same variables as at the time (a database could otherwise restart without its password variable).
+
 ## [0.2.4] - 2026-11-12
 
 ### Added
