@@ -10,6 +10,8 @@ import type {
   FirstRunInput,
   DeploymentDetail,
   DeploymentSummary,
+  EnvironmentComposeView,
+  EnvironmentUpdateCheck,
   EnvironmentInput,
   DockerInfo,
   GitProviderInput,
@@ -86,6 +88,7 @@ import type {
   TotpDeviceView,
   EnvironmentLinkInput,
   EnvironmentLinkResult,
+  LinkTarget,
   EnvironmentPortsInput,
   UpdateStatus,
   SystemInfo,
@@ -294,6 +297,12 @@ export const api = {
   },
 
   deployments: {
+    /** Fichier Compose : source, ajouts de Vercio et fusion (secrets masqués). */
+    compose: (projectId: string, envId: string) =>
+      request<EnvironmentComposeView>(`/projects/${projectId}/environments/${envId}/compose`),
+    /** Nouvelle version à déployer ? */
+    updateCheck: (projectId: string, envId: string) =>
+      request<EnvironmentUpdateCheck>(`/projects/${projectId}/environments/${envId}/update`),
     list: (projectId: string, envId: string) =>
       request<DeploymentSummary[]>(`/projects/${projectId}/environments/${envId}/deployments`),
     start: (projectId: string, envId: string) =>
@@ -354,6 +363,9 @@ export const api = {
       request<{ docker: 'removed' | 'missing' | 'in_use' | 'error' }>(`/networks/${id}`, {
         method: 'DELETE',
       }),
+    /** Services des autres projets joignables depuis cet environnement. */
+    linkTargets: (projectId: string, envId: string) =>
+      request<LinkTarget[]>(`/projects/${projectId}/environments/${envId}/link-targets`),
     link: (projectId: string, envId: string, input: EnvironmentLinkInput) =>
       request<EnvironmentLinkResult>(
         `/projects/${projectId}/environments/${envId}/links`,
@@ -375,6 +387,11 @@ export const api = {
   webhooks: {
     get: (projectId: string, envId: string) =>
       request<WebhookConfigView>(`/projects/${projectId}/environments/${envId}/webhooks`),
+    registryWatch: (projectId: string, envId: string, minutes: number | null) =>
+      request<WebhookConfigView>(
+        `/projects/${projectId}/environments/${envId}/registry-watch`,
+        json('PUT', { minutes }),
+      ),
     regenerate: (projectId: string, envId: string, sourceId: string) =>
       request<WebhookConfigView>(
         `/projects/${projectId}/environments/${envId}/webhooks/${sourceId}/regenerate`,

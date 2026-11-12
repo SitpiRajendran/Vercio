@@ -78,11 +78,13 @@ function describe(item: ActivityItem, compact: boolean): Line {
       const by =
         deployment.trigger === 'webhook'
           ? 'après un push'
-          : deployment.trigger === 'auto_rollback'
-            ? 'après un échec'
-            : deployment.username
-              ? `par ${deployment.username}`
-              : null
+          : deployment.trigger === 'watch'
+            ? 'nouvelle image détectée'
+            : deployment.trigger === 'auto_rollback'
+              ? 'après un échec'
+              : deployment.username
+                ? `par ${deployment.username}`
+                : null
       return {
         icon: rollback ? <Undo2 /> : <Rocket />,
         title: (

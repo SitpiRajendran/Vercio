@@ -97,7 +97,7 @@ export function EnvironmentNetworks({
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1">
           <Button size="sm" variant="outline" onClick={() => setConnecting(true)}>
             <Link2 />
-            Connecter à un autre projet
+            Connecter un service
           </Button>
           {joined.length > 0 && (
             <Button
@@ -195,7 +195,7 @@ function SubscriptionsDialog({
         </DialogHeader>
         {available.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            Aucune liaison : utilisez « Connecter à un autre projet ».
+            Aucune liaison : utilisez « Connecter un service ».
           </p>
         ) : (
           <ul className="max-h-[60vh] space-y-3 overflow-y-auto">

@@ -214,6 +214,69 @@ describe.skipIf(!TEST_DATABASE_URL)('Webhooks et conteneurs', () => {
       expect(deployment).toMatchObject({ trigger: 'webhook', status: 'succeeded' })
     })
 
+    it('fichier Compose : source, ajouts de Vercio, sans aucune valeur secrète', async () => {
+      const view = await call('GET', `${envUrl()}/compose`)
+      expect(view.statusCode).toBe(200)
+      const body = view.json()
+      expect(body.source.content).toContain('services:')
+      expect(body.deployed?.override).toContain('vercio.managed')
+      expect(JSON.stringify(body)).not.toContain('mot-de-passe-secret')
+      expect((await call('GET', `${envUrl()}/compose`, undefined, viewer)).statusCode).toBe(200)
+    })
+
+    it('surveillance du registry : déploie une nouvelle image sans webhook', async () => {
+      const off = await call('GET', `${envUrl()}/webhooks`)
+      expect(off.json().registryWatch).toMatchObject({ minutes: null })
+      expect((await call('PUT', `${envUrl()}/registry-watch`, { minutes: 7 })).statusCode).toBe(400)
+      const on = await call('PUT', `${envUrl()}/registry-watch`, { minutes: 5 })
+      expect(on.json().registryWatch).toMatchObject({ minutes: 5 })
+
+      // Rien de neuf : aucun déploiement.
+      expect(await app.registryWatcher.check(prod().id)).toMatch(/Images inchangées/)
+
+      // Verrouillé : nouvelle image ignorée.
+      rebuildLatest('2026-03-03T00:00:00Z')
+      await setRef('latest', 'locked')
+      expect(await app.registryWatcher.check(prod().id)).toMatch(/verrouillé/)
+      await setRef('latest', 'tracking')
+
+      const result = await app.registryWatcher.check(prod().id)
+      expect(result).toMatch(/Nouvelle image détectée/)
+      await app.deployments.idle()
+      const view = (await call('GET', `${envUrl()}/webhooks`)).json()
+      const event = view.events.find((item: { kind: string }) => item.kind === 'watch')
+      expect(event).toMatchObject({ result: 'deployed' })
+      const deployment = (await call('GET', `/deployments/${event.deploymentId}`)).json()
+      expect(deployment).toMatchObject({ trigger: 'watch', status: 'succeeded' })
+      expect(view.registryWatch.lastResult).toMatch(/Nouvelle image détectée/)
+
+      // L'intervalle n'est pas écoulé : le passage suivant ne relit rien.
+      await app.registryWatcher.tick()
+      expect((await call('GET', `${envUrl()}/webhooks`)).json().registryWatch.lastResult).toMatch(
+        /Nouvelle image détectée/,
+      )
+      await call('PUT', `${envUrl()}/registry-watch`, { minutes: null })
+    })
+
+    it('bouton « Mettre à jour » : signale une nouvelle image, puis « à jour » après déploiement', async () => {
+      const upToDate = await call('GET', `${envUrl()}/update`)
+      expect(upToDate.json()).toMatchObject({ status: 'up_to_date' })
+
+      rebuildLatest('2026-03-02T00:00:00Z')
+      // Le webhook (ignoré ici : environnement verrouillé) fait relire le registry.
+      await setRef('latest', 'locked')
+      const { token } = (await config()).sources[0]!
+      await hook(token!)
+      await setRef('latest', 'tracking')
+      const available = await call('GET', `${envUrl()}/update`)
+      expect(available.json()).toMatchObject({ status: 'available' })
+
+      await call('POST', `${envUrl()}/deployments`)
+      await app.deployments.idle()
+      const after = await call('GET', `${envUrl()}/update`)
+      expect(after.json()).toMatchObject({ status: 'up_to_date' })
+    })
+
     it('ignore une autre branche et un environnement verrouillé', async () => {
       const { token } = (await config()).sources[0]!
       const other = await hook(token!, { body: JSON.stringify({ branch: 'develop' }) })

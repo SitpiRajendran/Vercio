@@ -56,6 +56,26 @@ export const deploymentRoutes: FastifyPluginAsync<{
     return rows.map((row) => toSummary(row.deployment, row.username))
   })
 
+  /** Fichier Compose (source, ajouts de Vercio, fusion), secrets masqués. */
+  app.get('/projects/:id/environments/:envId/compose', viewer, async (request, reply) => {
+    const params = parseInput(envParams, request.params, reply)
+    if (!params) return
+    if (!(await findEnvironment(params.id, params.envId))) {
+      return reply.code(404).send({ error: 'Environnement introuvable' })
+    }
+    return engine.composeView(params.envId)
+  })
+
+  /** Nouvelle version à déployer ? (bouton « Mettre à jour »). */
+  app.get('/projects/:id/environments/:envId/update', viewer, async (request, reply) => {
+    const params = parseInput(envParams, request.params, reply)
+    if (!params) return
+    if (!(await findEnvironment(params.id, params.envId))) {
+      return reply.code(404).send({ error: 'Environnement introuvable' })
+    }
+    return engine.updateCheck(params.envId)
+  })
+
   app.post('/projects/:id/environments/:envId/deployments', deployer, async (request, reply) => {
     const params = parseInput(envParams, request.params, reply)
     if (!params) return

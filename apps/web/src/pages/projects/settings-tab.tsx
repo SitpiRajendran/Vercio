@@ -37,6 +37,7 @@ import { api, type CatalogRegistry } from '@/lib/api'
 import { useDebounced } from '@/lib/use-debounced'
 import { cn } from '@/lib/utils'
 import { useProjectCompose } from '@/lib/project-compose'
+import { ComposeFileCard } from './compose-file'
 import { EnvironmentsTab } from './environments-tab'
 import { projectToInput } from './to-input'
 import { WebhooksTab } from './webhooks-tab'
@@ -50,6 +51,7 @@ const SECTIONS = [
   { id: 'apparence', label: 'Apparence et adresse' },
   { id: 'environnements', label: 'Environnements' },
   { id: 'code', label: 'Code et images' },
+  { id: 'compose', label: 'Fichier Compose' },
   { id: 'sans-coupure', label: 'Mise à jour sans coupure' },
   { id: 'webhooks', label: 'Webhooks' },
   { id: 'general', label: 'Général et suppression' },
@@ -99,6 +101,16 @@ export function SettingsTab({
           />
           <CodeToImageFlow />
           <ServicesTab project={project} canEdit={can.isAdmin} />
+        </section>
+        <section
+          id="compose"
+          className="scroll-mt-[calc(var(--sticky-tabs-height,0px)+4rem)] space-y-3 lg:scroll-mt-[calc(var(--sticky-tabs-height,0px)+1rem)]"
+        >
+          <SectionTitle
+            title="Fichier Compose"
+            description="En lecture seule : votre fichier, les ajouts de Vercio et le fichier final reçu par Docker au dernier déploiement. Les valeurs secrètes sont masquées."
+          />
+          <ComposeFileCard project={project} envId={envId} />
         </section>
         <section
           id="sans-coupure"

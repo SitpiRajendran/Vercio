@@ -8,10 +8,12 @@ import {
   Loader2,
   Lock,
   RefreshCw,
+  Radar,
   ShieldCheck,
   Webhook,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { REGISTRY_WATCH_MINUTES } from '@vercio/shared'
 import type {
   AppSourceView,
   EnvironmentSourceView,
@@ -37,6 +39,7 @@ import {
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api } from '@/lib/api'
 import { formatDateTime, formatRelative } from '@/lib/format'
@@ -83,6 +86,15 @@ export function WebhooksTab({
               Aucun dépôt : ce projet n’a pas d’image suivie, les webhooks sont sans objet.
             </p>
           )}
+          {project.sources.length > 0 && (
+            <RegistryWatchCard
+              key={`watch-${envId}`}
+              project={project}
+              envId={envId}
+              config={config.data}
+              canEdit={can.canDeploy}
+            />
+          )}
           {project.sources.map((source) => {
             const envSource = environment.sources.find((item) => item.appSourceId === source.id)
             const hook = config.data.sources.find((item) => item.appSourceId === source.id)
@@ -111,6 +123,101 @@ export function WebhooksTab({
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * Surveillance du registry : Vercio relit lui-même les images suivies, pour un dépôt qui ne peut
+ * pas l'appeler (Vercio derrière un VPN, réseau interne).
+ */
+function RegistryWatchCard({
+  project,
+  envId,
+  config,
+  canEdit,
+}: {
+  project: ProjectView
+  envId: string
+  config: WebhookConfigView
+  canEdit: boolean
+}) {
+  const queryClient = useQueryClient()
+  const watch = config.registryWatch
+  const save = useMutation({
+    mutationFn: (minutes: number | null) => api.webhooks.registryWatch(project.id, envId, minutes),
+    onSuccess: (next) => {
+      queryClient.setQueryData(['webhooks', envId], next)
+      toast.success(
+        next.registryWatch.minutes
+          ? `Surveillance activée : relecture toutes les ${next.registryWatch.minutes} min`
+          : 'Surveillance désactivée',
+      )
+    },
+    onError: (error) => toast.error(error.message),
+  })
+  const enabled = watch.minutes !== null
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1.5">
+          <CardTitle className="flex items-center gap-2">
+            <Radar className="size-4" />
+            Surveillance du registry
+            {enabled && (
+              <Badge variant="outline" className="border-success/40 text-success">
+                Active
+              </Badge>
+            )}
+          </CardTitle>
+          <CardDescription>
+            Sans webhook : Vercio relit lui-même les images suivies et déploie les nouvelles. Utile
+            quand GitLab ou GitHub ne peuvent pas joindre Vercio (VPN, réseau interne).
+          </CardDescription>
+        </div>
+        <Switch
+          checked={enabled}
+          disabled={!canEdit || save.isPending}
+          aria-label="Surveillance du registry"
+          onCheckedChange={(on) => save.mutate(on ? 5 : null)}
+        />
+      </CardHeader>
+      {enabled && (
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground">Relecture toutes les</span>
+            {REGISTRY_WATCH_MINUTES.map((minutes) => (
+              <Button
+                key={minutes}
+                size="sm"
+                variant={watch.minutes === minutes ? 'default' : 'outline'}
+                disabled={!canEdit || save.isPending}
+                onClick={() => save.mutate(minutes)}
+              >
+                {minutes} min
+              </Button>
+            ))}
+          </div>
+          <p className="text-muted-foreground text-xs">
+            {watch.lastCheckAt ? (
+              <>
+                Dernière relecture{' '}
+                <span title={formatDateTime(watch.lastCheckAt)}>
+                  {formatRelative(watch.lastCheckAt)}
+                </span>{' '}
+                : {watch.lastResult}
+              </>
+            ) : (
+              'Première relecture dans la minute.'
+            )}
+          </p>
+          <p className="text-muted-foreground text-xs">
+            Mêmes règles qu’un webhook : rien n’est déployé si l’environnement est verrouillé, et un
+            seul déploiement à la fois. Les nouvelles images apparaissent dans « Derniers appels ».
+          </p>
+        </CardContent>
+      )}
+    </Card>
   )
 }
 
@@ -396,7 +503,12 @@ const DETAIL_LABELS: Record<string, string> = {
   version: 'version',
 }
 
-const KINDS: Record<string, string> = { generic: 'Générique', gitlab: 'GitLab', github: 'GitHub' }
+const KINDS: Record<string, string> = {
+  generic: 'Générique',
+  gitlab: 'GitLab',
+  github: 'GitHub',
+  watch: 'Surveillance du registry',
+}
 
 function EventsCard({
   project,

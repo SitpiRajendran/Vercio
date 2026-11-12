@@ -4,6 +4,7 @@ import { z } from 'zod'
 import {
   hasRole,
   ipAllowlistSchema,
+  registryWatchSchema,
   webhookSettingsInputSchema,
   type WebhookConfigView,
   type WebhookEventView,
@@ -23,6 +24,7 @@ import {
 } from '../db/schema.js'
 import { WebhookInstallError } from '../providers/git.js'
 import { installRemoteWebhook } from '../webhooks/remote.js'
+import type { RegistryWatcher } from '../webhooks/watch.js'
 import type { SecretBox } from '../lib/crypto.js'
 import {
   webhookSettings,
@@ -74,7 +76,8 @@ export const webhookAdminRoutes: FastifyPluginAsync<{
   db: Database
   box: SecretBox
   publicUrl: URL
-}> = async (app, { db, box, publicUrl }) => {
+  watcher: RegistryWatcher
+}> = async (app, { db, box, publicUrl, watcher }) => {
   const viewer = { preHandler: app.requireRole('vercio-viewer') }
   const deployer = { preHandler: app.requireRole('vercio-deployer') }
   const admin = { preHandler: app.requireRole('vercio-admin') }
@@ -114,6 +117,7 @@ export const webhookAdminRoutes: FastifyPluginAsync<{
         .where(eq(appSources.projectId, env.projectId)),
     ])
     return {
+      registryWatch: watcher.view(env.id, env.registryWatchMinutes),
       ipAllowlist: env.webhookIpAllowlist,
       globalIpAllowlist: globalList.ipAllowlist,
       enabled: globalList.enabled,
@@ -260,6 +264,29 @@ export const webhookAdminRoutes: FastifyPluginAsync<{
     await auditAction(db, request, 'webhook.allowlist', `${found.project.slug}/${found.env.slug}`, {
       ipAllowlist: input.ipAllowlist,
     })
+    return configView(request, env!)
+  })
+
+  /** Surveillance du registry : Vercio relit lui-même les images, sans webhook. */
+  app.put('/projects/:id/environments/:envId/registry-watch', deployer, async (request, reply) => {
+    const params = parseInput(envParams, request.params, reply)
+    const input = params && parseInput(registryWatchSchema, request.body, reply)
+    if (!params || !input) return
+    const found = await findEnvironment(params.id, params.envId)
+    if (!found) return reply.code(404).send({ error: 'Environnement introuvable' })
+    const [env] = await db
+      .update(environments)
+      .set({ registryWatchMinutes: input.minutes })
+      .where(eq(environments.id, params.envId))
+      .returning()
+    watcher.reset(params.envId)
+    await auditAction(
+      db,
+      request,
+      'webhook.registry_watch',
+      `${found.project.slug}/${found.env.slug}`,
+      { minutes: input.minutes },
+    )
     return configView(request, env!)
   })
 

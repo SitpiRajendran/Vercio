@@ -258,6 +258,7 @@ export class WebhookService {
 
     // Un nouveau build ou un nouveau tag : la liste des versions affichée doit être relue.
     this.versions.invalidate(source.id)
+    this.engine.forgetUpdateCheck(environment.id)
 
     if (!event.relevant) return finish(200, 'ignored', event.reason ?? 'Appel sans effet')
 
@@ -291,6 +292,11 @@ export class WebhookService {
     }
 
     return this.serialized(environment.id, () => this.deployIfChanged(environment.id, finish))
+  }
+
+  /** Tâche exclusive par environnement, partagée avec la surveillance du registry. */
+  runExclusive<T>(environmentId: string, task: () => Promise<T>): Promise<T> {
+    return this.serialized(environmentId, task)
   }
 
   private serialized<T>(key: string, task: () => Promise<T>): Promise<T> {

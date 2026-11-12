@@ -41,6 +41,7 @@ import { networkRoutes } from './routes/networks.js'
 import { systemRoutes } from './routes/system.js'
 import { userRoutes } from './routes/users.js'
 import { VersionService } from './versions/service.js'
+import { RegistryWatcher } from './webhooks/watch.js'
 import { WebhookService } from './webhooks/service.js'
 
 export interface AppDeps {
@@ -63,6 +64,7 @@ export interface AppDeps {
 declare module 'fastify' {
   interface FastifyInstance {
     deployments: DeploymentEngine
+    registryWatcher: RegistryWatcher
     notifications: NotificationService
     disk: DiskWatcher
     backups: BackupService
@@ -167,6 +169,8 @@ export async function buildApp({
   const firstRunCode = await setupCode(db, config, app.log)
   app.decorate('deployments', engine)
   const webhooks = new WebhookService(db, box, engine, versions, app.log, notifications)
+  const registryWatcher = new RegistryWatcher(db, engine, webhooks, app.log)
+  app.decorate('registryWatcher', registryWatcher)
   // SSO : variables OIDC_* du .env (prioritaires), sinon réglages enregistrés depuis l'interface.
   const sso = new SsoManager(
     db,
@@ -199,9 +203,11 @@ export async function buildApp({
     log: app.log,
   })
   if (watchers) resources.start()
+  if (watchers) registryWatcher.start()
   app.addHook('onClose', async () => {
     resources.stop()
     stats.stop()
+    registryWatcher.stop()
   })
 
   await app.register(
@@ -242,7 +248,14 @@ export async function buildApp({
       await api.register(projectRoutes, { prefix: '/projects', db, box, versions, engine, host })
       await api.register(deploymentRoutes, { db, engine })
       await api.register(eventRoutes, { db })
-      await api.register(networkRoutes, { db, host })
+      await api.register(networkRoutes, {
+        db,
+        host,
+        box,
+        runner,
+        dockerSocket: config.DOCKER_SOCKET,
+        dataDir: config.VERCIO_DATA_DIR,
+      })
       await api.register(overviewRoutes, { db, host, stats })
       await api.register(backupRoutes, { db, box, backups: backupService, host })
       await api.register(containerRoutes, {
@@ -253,7 +266,7 @@ export async function buildApp({
         sessions,
         publicOrigin: publicUrl.origin,
       })
-      await api.register(webhookAdminRoutes, { db, box, publicUrl })
+      await api.register(webhookAdminRoutes, { db, box, publicUrl, watcher: registryWatcher })
       await api.register(hookRoutes, { prefix: '/hooks', webhooks })
       api.setNotFoundHandler((_request, reply) => {
         reply.code(404).send({ error: 'Route inconnue' })

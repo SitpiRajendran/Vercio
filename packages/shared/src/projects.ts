@@ -555,10 +555,46 @@ export interface VersionChoices {
 
 // --- Déploiements -----------------------------------------------------------------------------
 
+/**
+ * Nouvelle version à déployer ? `available` : le registry a des images différentes de celles
+ * en service ; `fixed` : images fixes (rien à comparer) ; `locked` : environnement verrouillé.
+ */
+export interface EnvironmentUpdateCheck {
+  status: 'available' | 'up_to_date' | 'fixed' | 'locked' | 'never_deployed' | 'error'
+  /** Tags relus (`prod`, `v1.4.0`…). */
+  tags: string[]
+  message: string | null
+  checkedAt: string
+}
+
+/** Fichier Compose d'un environnement, en lecture seule (secrets masqués). */
+export interface EnvironmentComposeView {
+  source: {
+    origin: 'inline' | 'git'
+    /** `dépôt · chemin (branche)` pour un fichier lu dans Git. */
+    location: string | null
+    content: string | null
+    error: string | null
+  }
+  /** Fichiers reçus par Docker au dernier déploiement ; null : jamais déployé. */
+  deployed: {
+    at: string
+    /** Fichier du projet tel que déployé (après les adaptations de Vercio). */
+    compose: string
+    /** Ajouts de Vercio (`compose.vercio.yml`). */
+    override: string
+    /** Fusion des deux, calculée par `docker compose config`. */
+    merged: string | null
+    mergeError: string | null
+  } | null
+  /** Valeurs masquées (`service.CLÉ`). */
+  masked: string[]
+}
+
 export interface DeploymentSummary {
   id: string
   environmentId: string
-  trigger: 'user' | 'webhook' | 'rollback' | 'auto_rollback'
+  trigger: 'user' | 'webhook' | 'rollback' | 'auto_rollback' | 'watch'
   status: DeploymentStatus
   username: string | null
   /** Par source : branche, version demandée (`latest` ou tag) et tag effectivement déployé. */

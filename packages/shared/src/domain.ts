@@ -14,7 +14,13 @@ export const deploymentStatusSchema = z.enum([
   'rolled_back',
   'interrupted',
 ])
-export const deploymentTriggerSchema = z.enum(['user', 'webhook', 'rollback', 'auto_rollback'])
+export const deploymentTriggerSchema = z.enum([
+  'user',
+  'webhook',
+  'rollback',
+  'auto_rollback',
+  'watch',
+])
 
 export type ProjectType = z.infer<typeof projectTypeSchema>
 export type GitProviderType = z.infer<typeof gitProviderTypeSchema>

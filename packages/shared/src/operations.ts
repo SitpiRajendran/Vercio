@@ -81,6 +81,28 @@ export interface WebhookEventView {
   createdAt: string
 }
 
+/** Intervalles proposés pour la surveillance du registry, en minutes. */
+export const REGISTRY_WATCH_MINUTES = [2, 5, 15, 30, 60] as const
+
+export const registryWatchSchema = z.object({
+  /** null : désactivée. */
+  minutes: z
+    .number()
+    .int()
+    .refine((value) => (REGISTRY_WATCH_MINUTES as readonly number[]).includes(value), {
+      message: 'Intervalle non proposé',
+    })
+    .nullable(),
+})
+export type RegistryWatchInput = z.infer<typeof registryWatchSchema>
+
+export interface RegistryWatchView {
+  minutes: number | null
+  /** Dernière relecture du registry et son résultat (depuis le démarrage de Vercio). */
+  lastCheckAt: string | null
+  lastResult: string | null
+}
+
 export interface WebhookConfigView {
   /** Liste propre à l'environnement (vide : la liste globale s'applique). */
   ipAllowlist: string[]
@@ -89,6 +111,8 @@ export interface WebhookConfigView {
   enabled: boolean
   sources: WebhookSourceView[]
   events: WebhookEventView[]
+  /** Surveillance du registry, sans webhook (Vercio derrière un VPN, par exemple). */
+  registryWatch: RegistryWatchView
 }
 
 export interface WebhookSettings {

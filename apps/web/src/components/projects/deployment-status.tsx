@@ -24,6 +24,7 @@ export const TRIGGER_LABELS: Record<DeploymentSummary['trigger'], string> = {
   webhook: 'Webhook',
   rollback: 'Retour arrière',
   auto_rollback: 'Retour automatique',
+  watch: 'Surveillance',
 }
 
 export function DeploymentStatusBadge({

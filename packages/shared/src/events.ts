@@ -27,7 +27,7 @@ export type ActivityItem =
       deployment: {
         id: string
         status: DeploymentStatus
-        trigger: 'user' | 'webhook' | 'rollback' | 'auto_rollback'
+        trigger: 'user' | 'webhook' | 'rollback' | 'auto_rollback' | 'watch'
         username: string | null
         tags: string[]
         error: string | null

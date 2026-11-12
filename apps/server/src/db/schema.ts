@@ -48,6 +48,7 @@ export const deploymentTrigger = pgEnum('deployment_trigger', [
   'webhook',
   'rollback',
   'auto_rollback',
+  'watch',
 ])
 export const notificationType = pgEnum('notification_type', ['email', 'teams', 'webhook'])
 export const notificationDeliveryStatus = pgEnum('notification_delivery_status', [
@@ -283,6 +284,11 @@ export const environments = pgTable(
     volumeMap: jsonb('volume_map').notNull().default({}),
     /** Ports ouverts sur l'hôte par Vercio, en plus de ceux du fichier Compose. */
     publishedPorts: jsonb('published_ports').notNull().default([]),
+    /**
+     * Surveillance du registry, en minutes (null : désactivée) : Vercio relit lui-même les
+     * images suivies et déploie les nouvelles, quand les webhooks ne peuvent pas l'atteindre.
+     */
+    registryWatchMinutes: integer('registry_watch_minutes'),
     /** Liste d'IP / CIDR autorisées pour les webhooks (vide = liste globale). */
     webhookIpAllowlist: text('webhook_ip_allowlist')
       .array()

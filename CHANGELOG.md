@@ -4,6 +4,19 @@ All notable changes to Vercio are listed here. Versions follow [semantic version
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-12
+
+### Added
+
+- « Connecter un service » replaces « Connecter à un autre projet » and does everything in one window: pick the service to reach (Vercio lists the services of the other projects and recognises PostgreSQL, MySQL, MariaDB, MongoDB and Redis), choose which of your services reach it (back-end services preselected), and for a database let Vercio create a dedicated database and user with a random password. The connection variable (`DATABASE_URL`, `REDIS_URL`, `MONGODB_URI`, or `<NAME>_URL` for an API) is saved as a secret and the project can be redeployed in the same step.
+- Compose file of each environment in the project settings (« Fichier Compose »), read-only: your file, Vercio's additions (`compose.vercio.yml`) and the final file Docker received at the last deployment, merged by `docker compose config`, with copy and download. Secret values are masked: Vercio secret variables, names that look like secrets (password, token, key…) and addresses with credentials; `${VARIABLES}` stay as references and `env_file` contents are never shown.
+- Registry watch, for when GitLab or GitHub cannot reach Vercio (VPN, internal network): in the project's « Webhooks » tab, Vercio checks the followed images itself every 2, 5, 15, 30 or 60 minutes and deploys new ones, with the same rules as a webhook (nothing while the environment is locked, one deployment at a time). Detections appear in « Derniers appels », and these deployments are labelled « Surveillance ».
+
+### Changed
+
+- Each link between projects now gets its own network: two applications connected to the same database can no longer reach each other. Dedicated PostgreSQL databases are closed to other users (`REVOKE ALL … FROM PUBLIC`). Link names only need to be unique within a project. Existing links keep working as they are.
+- « Mettre à jour » only appears when the registry has new images for the environment (checked every 2 minutes and after each webhook). Otherwise a discreet « Redéployer » button redeploys the same version, for example after changing variables.
+
 ## [0.2.3] - 2026-11-10
 
 ### Added

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { and, desc, eq, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import type { FastifyBaseLogger } from 'fastify'
@@ -12,9 +12,12 @@ import {
   type DeploymentLogLine,
   type CommitInfo,
   type DeploymentSummary,
+  type EnvironmentComposeView,
+  type EnvironmentUpdateCheck,
   type PublishedPortRule,
 } from '@vercio/shared'
 import { analyzeCompose } from '../compose/analyze.js'
+import { maskComposeSecrets } from '../compose/mask.js'
 import type { Database } from '../db/client.js'
 import {
   appSources,
@@ -111,6 +114,11 @@ export class DeploymentEngine {
   /** Environnements en cours de déploiement et fin du dernier déploiement (alertes conteneur). */
   readonly #active = new Set<string>()
   readonly #finishedAt = new Map<string, number>()
+  /** Vérifications « nouvelle version ? », par environnement et dernier déploiement. */
+  readonly #updateChecks = new Map<
+    string,
+    { key: string; value: EnvironmentUpdateCheck; expiresAt: number }
+  >()
   /**
    * Chemin absolu : Docker est lancé depuis le dossier de l'environnement, où un DOCKER_CONFIG
    * relatif désignerait un dossier inexistant (ni identifiants, ni plugin Compose).
@@ -234,7 +242,9 @@ export class DeploymentEngine {
    */
   async imagesChanged(environmentId: string): Promise<{ changed: boolean; tags: string[] }> {
     const context = await this.loadContext(environmentId)
-    const { images, versions } = await this.resolveImages(context, async () => {})
+    const { images, versions } = await this.resolveImages(context, async () => {}, {
+      commits: false,
+    })
     const tags = [...new Set(Object.values(versions).map((version) => version.tag))]
     const [last] = await this.db
       .select({ digests: deployments.digests })
@@ -255,6 +265,196 @@ export class DeploymentEngine {
       Object.keys(images).length > 0 &&
       (compared.length === 0 || compared.some((service) => previous[service] !== images[service]))
     return { changed, tags }
+  }
+
+  /**
+   * Fichier Compose de l'environnement, en lecture seule : le fichier du projet (dépôt ou collé),
+   * les fichiers reçus par Docker au dernier déploiement et leur fusion. Les secrets sont masqués.
+   */
+  async composeView(environmentId: string): Promise<EnvironmentComposeView> {
+    const context = await this.loadContext(environmentId)
+    const { project, environment } = context
+    const secretKeys = context.variables.filter((row) => row.secret).map((row) => row.key)
+    const masked = new Set<string>()
+    const mask = (text: string) => {
+      const result = maskComposeSecrets(text, secretKeys)
+      for (const item of result.masked) masked.add(item)
+      return result.content
+    }
+
+    let source: EnvironmentComposeView['source']
+    if (project.composeSource === 'inline') {
+      source = {
+        origin: 'inline',
+        location: null,
+        content: mask(project.composeInline ?? ''),
+        error: null,
+      }
+    } else {
+      const entry = context.sources.find((item) => item.source.id === project.composeAppSourceId)
+      const branch =
+        context.envSources.find((item) => item.appSourceId === entry?.source.id)?.branch ??
+        entry?.source.defaultBranch
+      const location = entry
+        ? `${entry.source.repository} · ${project.composePath ?? 'docker-compose.yml'} (${branch})`
+        : null
+      try {
+        source = {
+          origin: 'git',
+          location,
+          content: mask(await this.composeContent(context, async () => {})),
+          error: null,
+        }
+      } catch (error) {
+        source = {
+          origin: 'git',
+          location,
+          content: null,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      }
+    }
+
+    const workDir = join(this.#dataDir, 'envs', project.slug, environment.slug)
+    let deployed: EnvironmentComposeView['deployed'] = null
+    try {
+      const [compose, override, info] = await Promise.all([
+        readFile(join(workDir, 'compose.yml'), 'utf8'),
+        readFile(join(workDir, 'compose.vercio.yml'), 'utf8'),
+        stat(join(workDir, 'compose.vercio.yml')),
+      ])
+      const merged = await this.mergeCompose(
+        composeProjectName(project.slug, environment.slug),
+        compose,
+        override,
+      )
+      deployed = {
+        at: info.mtime.toISOString(),
+        compose: mask(compose),
+        override: mask(override),
+        merged: merged.content === null ? null : mask(merged.content),
+        mergeError: merged.error,
+      }
+    } catch {
+      // Jamais déployé (ou dossier supprimé) : rien à montrer.
+    }
+    return { source, deployed, masked: [...masked].sort() }
+  }
+
+  /**
+   * Fusion calculée par Docker (`docker compose config`), dans un dossier temporaire : aucune
+   * variable remplacée, chemins laissés tels quels, et fichiers env_file vides (leur contenu,
+   * les variables du projet, n'apparaît jamais).
+   */
+  private async mergeCompose(
+    name: string,
+    compose: string,
+    override: string,
+  ): Promise<{ content: string | null; error: string | null }> {
+    const dir = await mkdtemp(join(this.#dataDir, 'compose-view-'))
+    try {
+      await writeFile(join(dir, 'compose.yml'), compose)
+      await writeFile(join(dir, 'compose.vercio.yml'), override)
+      for (const path of envFilePaths(compose)) {
+        const file = insideDir(dir, path)
+        await mkdir(dirname(file), { recursive: true })
+        await writeFile(file, '')
+      }
+      const out: string[] = []
+      const errors: string[] = []
+      const { code } = await this.options.runner.run(
+        'docker',
+        [
+          'compose',
+          '--ansi',
+          'never',
+          '--project-name',
+          name,
+          '--file',
+          'compose.yml',
+          '--file',
+          'compose.vercio.yml',
+          'config',
+          '--no-interpolate',
+          '--no-path-resolution',
+        ],
+        {
+          cwd: dir,
+          env: {
+            PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+            HOME: dir,
+            DOCKER_HOST: `unix://${this.options.dockerSocket}`,
+          },
+          timeoutMs: 30_000,
+          onLine: (line, stream) => (stream === 'stdout' ? out : errors).push(line),
+        },
+      )
+      if (code !== 0) {
+        return {
+          content: null,
+          error: errors.filter(Boolean).slice(-3).join(' ') || `code ${code}`,
+        }
+      }
+      return { content: `${out.join('\n').trimEnd()}\n`, error: null }
+    } catch (error) {
+      return { content: null, error: error instanceof Error ? error.message : String(error) }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+
+  /** Le registry a peut-être changé (webhook reçu) : la prochaine vérification le relit. */
+  forgetUpdateCheck(environmentId: string): void {
+    this.#updateChecks.delete(environmentId)
+  }
+
+  /**
+   * Une nouvelle version attend-elle d'être déployée ? Relecture légère du registry (sans
+   * recherche de commit), gardée une minute ; un nouveau déploiement l'invalide.
+   */
+  async updateCheck(environmentId: string): Promise<EnvironmentUpdateCheck> {
+    const [last] = await this.db
+      .select({ id: deployments.id, digests: deployments.digests })
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.environmentId, environmentId),
+          or(eq(deployments.status, 'succeeded'), eq(deployments.status, 'running')),
+        ),
+      )
+      .orderBy(desc(deployments.createdAt))
+      .limit(1)
+    const key = last?.id ?? 'none'
+    const cached = this.#updateChecks.get(environmentId)
+    if (cached && cached.key === key && cached.expiresAt > Date.now()) return cached.value
+
+    const result = (value: Omit<EnvironmentUpdateCheck, 'checkedAt'>): EnvironmentUpdateCheck => {
+      const check = { ...value, checkedAt: new Date().toISOString() }
+      this.#updateChecks.set(environmentId, { key, value: check, expiresAt: Date.now() + 60_000 })
+      return check
+    }
+    const context = await this.loadContext(environmentId)
+    if (!context.envSources.length || !context.tracked.length) {
+      return result({ status: 'fixed', tags: [], message: null })
+    }
+    if (context.envSources.every((item) => item.mode === 'locked')) {
+      return result({ status: 'locked', tags: [], message: null })
+    }
+    if (!last) return result({ status: 'never_deployed', tags: [], message: null })
+    let resolved: Awaited<ReturnType<DeploymentEngine['resolveImages']>>
+    try {
+      resolved = await this.resolveImages(context, async () => {}, { commits: false })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return result({ status: 'error', tags: [], message })
+    }
+    const tags = [...new Set(Object.values(resolved.versions).map((version) => version.tag))]
+    const previous = (last.digests ?? {}) as Record<string, string>
+    const compared = Object.keys(resolved.images).filter((service) => service in previous)
+    const changed =
+      compared.length === 0 ||
+      compared.some((service) => previous[service] !== resolved.images[service])
+    return result({ status: changed ? 'available' : 'up_to_date', tags, message: null })
   }
 
   /** Un seul message par demande, retour automatique compris. */
@@ -1230,6 +1430,7 @@ export class DeploymentEngine {
   private async resolveImages(
     context: Awaited<ReturnType<DeploymentEngine['loadContext']>>,
     log: (line: string, stream?: DeploymentLogLine['stream']) => Promise<void>,
+    options: { commits?: boolean } = {},
   ) {
     const images: Record<string, string> = {}
     const versions: DeploymentSummary['versions'] = {}
@@ -1274,6 +1475,8 @@ export class DeploymentEngine {
           `${registryHost(registry.url)}/${service.imageRepository}@${info.digest}`
         await log(`  ${service.serviceName} → ${images[service.serviceName]}`)
       }
+      // Simple comparaison d'images (webhook, bouton « Mettre à jour ») : pas de commit à chercher.
+      if (options.commits === false) continue
       // Version de la CI (commit ou tag) qui a produit exactement ces images, pour l'historique.
       let commit: CommitInfo | null = null
       if (forSource.length && this.options.versions) {

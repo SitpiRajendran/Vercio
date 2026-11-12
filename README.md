@@ -43,7 +43,7 @@ Vercio is made for small teams hosting a few websites or APIs on a server who wa
 - **Container monitoring**: state, health, open ports, CPU and memory, live logs, terminal in the browser.
 - **Map** of the traffic between containers and of the ports exposed to the Internet.
 - **Open ports** to the outside from the project page, with a « site temporarily unavailable » page instead of an error while a service restarts.
-- **Connect projects** together: a service of another project (its database, for example) becomes reachable by name.
+- **Connect a service** of another project (database, Redis, API) in one window: each link gets its own network, so two applications using the same database cannot reach each other; for PostgreSQL, MySQL, MariaDB and MongoDB, Vercio can create a dedicated database and user, save the connection variable as a secret and redeploy.
 - **Environment variables**, encrypted, per project and per environment (production, staging…).
 - **Backups** of databases (PostgreSQL, MySQL, MariaDB, MongoDB) and volumes to S3 or a folder: encrypted, scheduled, restorable from the interface. Vercio also backs itself up.
 - **Notifications** by email, Microsoft Teams or webhook.
@@ -129,7 +129,7 @@ To update by hand instead:
 docker compose pull && docker compose up -d
 ```
 
-Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.3` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
+Images are published to `ghcr.io/sitpirajendran/vercio` (amd64 and arm64). To stay on a given version, set for example `VERCIO_TAG=v0.2.4` in `.env`. What changed in each version is listed in the [changelog](CHANGELOG.md) and on the [releases page](https://github.com/SitpiRajendran/Vercio/releases).
 
 ## Configuration
 
@@ -157,7 +157,7 @@ Installation settings are in the `.env` file next to `docker-compose.yml`. After
 1. **Paramètres → Code et images** (Settings → Code and images): connect GitLab or GitHub with a token. The matching image registry is added automatically.
 2. **Nouveau projet** (New project): pick the repository and the Compose file, or paste it. Vercio finds the images built by your CI.
 3. **Mettre à jour** (Update) deploys the chosen version. The deployment log is shown live, then the container logs.
-4. For automatic updates, add the webhook shown in the project's **Webhooks** tab (Vercio can create it for you on GitLab or GitHub). If Vercio is not reachable from the Internet, simply turn webhooks off in the settings.
+4. For automatic updates, add the webhook shown in the project's **Webhooks** tab (Vercio can create it for you on GitLab or GitHub). If GitLab or GitHub cannot reach Vercio (behind a VPN, on an internal network), turn on **Surveillance du registry** (registry watch) in the same tab instead: Vercio checks the followed images itself every 2 to 60 minutes and deploys new ones, with the same rules as a webhook.
 
 ### Accounts and roles
 

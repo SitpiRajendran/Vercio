@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   DatabaseBackup,
@@ -6,17 +7,24 @@ import {
   Loader2,
   Lock,
   Play,
+  RefreshCcw,
   Rocket,
   RotateCw,
   Square,
 } from 'lucide-react'
-import type { ContainerUsage, OverviewEnvironment, OverviewProject } from '@vercio/shared'
+import type {
+  ContainerUsage,
+  EnvironmentUpdateCheck,
+  OverviewEnvironment,
+  OverviewProject,
+} from '@vercio/shared'
 import { useContainerActions } from '@/components/containers/container-actions'
 import { ContainerList } from '@/components/containers/container-list'
 import { deployedTags } from '@/components/projects/deployment-status'
 import { ProjectAvatar } from '@/components/projects/project-avatar'
 import { Button } from '@/components/ui/button'
 import { useWorkbench, type EnvTarget } from '@/components/workbench/workbench'
+import { api } from '@/lib/api'
 import { formatDateTime, formatRelative } from '@/lib/format'
 import { environmentStatus, TONE_DOT, TONE_TEXT } from '@/lib/overview'
 import { cn } from '@/lib/utils'
@@ -104,8 +112,9 @@ export function EnvironmentPills({
 
 /**
  * Boutons selon l'état de l'environnement : jamais déployé (ou sans conteneur) → « Déployer » ;
- * arrêté → « Démarrer » et « Mettre à jour » ; en marche → « Mettre à jour », « Redémarrer »,
- * « Arrêter ».
+ * arrêté → « Démarrer » ; en marche → « Redémarrer », « Arrêter ». « Mettre à jour » n'apparaît
+ * que si le registry a de nouvelles images ; sinon un bouton discret « Redéployer » (après un
+ * changement de variables, par exemple).
  */
 export function EnvironmentActions({
   target,
@@ -122,6 +131,14 @@ export function EnvironmentActions({
   url?: string | null
 }) {
   const workbench = useWorkbench()
+  const update = useUpdateCheck(
+    target,
+    env.current?.id ?? null,
+    workbench.canDeploy &&
+      env.containers.length > 0 &&
+      env.lastDeployment?.status !== 'queued' &&
+      env.lastDeployment?.status !== 'running',
+  )
   const open = url && (
     <Button size="sm" variant="outline" asChild>
       <a href={url} target="_blank" rel="noreferrer" title={url}>
@@ -138,17 +155,31 @@ export function EnvironmentActions({
   const stopped = hasContainers && !anyRunning
   const whole = actions.pending && !actions.pending.service ? actions.pending.action : null
   const disabled = actions.busy || deploying
+  const available = update.data?.status === 'available'
 
-  const deploy = (
-    <Button
-      size="sm"
-      variant={stopped ? 'outline' : 'default'}
-      onClick={() => workbench.openDeploy(target)}
-    >
-      {deploying ? <Loader2 className="animate-spin" /> : <Rocket />}
-      {deploying ? 'Déploiement…' : hasContainers ? 'Mettre à jour' : 'Déployer'}
-    </Button>
-  )
+  const deploy =
+    deploying || !hasContainers || available ? (
+      <Button
+        size="sm"
+        variant={stopped && !available ? 'outline' : 'default'}
+        title={available ? `Nouvelle version : ${update.data!.tags.join(', ')}` : undefined}
+        onClick={() => workbench.openDeploy(target)}
+      >
+        {deploying ? <Loader2 className="animate-spin" /> : <Rocket />}
+        {deploying ? 'Déploiement…' : hasContainers ? 'Mettre à jour' : 'Déployer'}
+      </Button>
+    ) : (
+      <Button
+        size="sm"
+        variant="outline"
+        title={redeployTitle(update.data)}
+        aria-label="Redéployer"
+        onClick={() => workbench.openDeploy(target)}
+      >
+        <RefreshCcw />
+        {!compact && 'Redéployer'}
+      </Button>
+    )
   return (
     <div className="flex flex-wrap items-center gap-2">
       {open}
@@ -191,6 +222,34 @@ export function EnvironmentActions({
       )}
     </div>
   )
+}
+
+/** Nouvelle version à déployer ? Relu toutes les 2 min et au retour sur l'onglet. */
+function useUpdateCheck(target: EnvTarget, currentId: string | null, enabled: boolean) {
+  return useQuery({
+    // Nouvelle clé après chaque déploiement : l'état est relu tout de suite.
+    queryKey: ['update-check', target.envId, currentId],
+    queryFn: () => api.deployments.updateCheck(target.projectId, target.envId),
+    enabled,
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+    retry: false,
+  })
+}
+
+function redeployTitle(check: EnvironmentUpdateCheck | undefined): string {
+  switch (check?.status) {
+    case 'up_to_date':
+      return `À jour (${check.tags.join(', ')}) : redéployer la même version`
+    case 'fixed':
+      return 'Images fixes : redéployer (relit le fichier Compose et les variables)'
+    case 'locked':
+      return 'Version verrouillée : redéployer la même version'
+    case 'error':
+      return `Nouvelle version non vérifiée : ${check.message ?? 'registry injoignable'}`
+    default:
+      return 'Redéployer'
+  }
 }
 
 /** Ligne « version en service », discrète. */

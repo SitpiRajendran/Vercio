@@ -5,24 +5,32 @@ import {
   composeProjectName,
   environmentLinkSchema,
   environmentNetworksSchema,
+  LINK_KINDS,
+  linkDatabaseName,
+  linkUrl,
   sharedNetworkDockerName,
   sharedNetworkNameSchema,
   sharedNetworkInputSchema,
   sharedNetworkUpdateSchema,
   type EnvironmentLinkResult,
   type EnvironmentRef,
+  type LinkTarget,
   type SharedNetworkView,
 } from '@vercio/shared'
 import { analyzeCompose } from '../compose/analyze.js'
 import type { Database } from '../db/client.js'
 import {
   deployments,
+  envVariables,
   environmentNetworks,
   environments,
   projects,
   sharedNetworks,
 } from '../db/schema.js'
+import type { CommandRunner } from '../deploy/command.js'
 import type { HostDriver, NetworkState } from '../docker/host-driver.js'
+import type { SecretBox } from '../lib/crypto.js'
+import { declaredPort, linkKind, provisionDatabase, randomPassword } from '../networks/links.js'
 import { auditAction, parseInput } from './helpers.js'
 
 type EnvironmentRow = typeof environments.$inferSelect
@@ -40,10 +48,14 @@ function ref(project: ProjectRow, environment: EnvironmentRow): EnvironmentRef {
 }
 
 /** Réseaux partagés : un service d'un environnement, joignable par alias depuis d'autres. */
-export const networkRoutes: FastifyPluginAsync<{ db: Database; host: HostDriver }> = async (
-  app,
-  { db, host },
-) => {
+export const networkRoutes: FastifyPluginAsync<{
+  db: Database
+  host: HostDriver
+  box: SecretBox
+  runner: CommandRunner
+  dockerSocket: string
+  dataDir: string
+}> = async (app, { db, host, box, runner, dockerSocket, dataDir }) => {
   const viewer = { preHandler: app.requireRole('vercio-viewer') }
   const admin = { preHandler: app.requireRole('vercio-admin') }
   const idParams = z.object({ id: z.uuid() })
@@ -255,10 +267,80 @@ export const networkRoutes: FastifyPluginAsync<{ db: Database; host: HostDriver 
     }
   }
 
+  /** Services du dernier déploiement réussi, avec leur image et leurs ports. */
+  async function deployedAnalysis(environmentId: string) {
+    const [last] = await db
+      .select({ compose: deployments.composeRendered })
+      .from(deployments)
+      .where(and(eq(deployments.environmentId, environmentId), eq(deployments.status, 'succeeded')))
+      .orderBy(desc(deployments.createdAt))
+      .limit(1)
+    return last?.compose ? analyzeCompose(last.compose).services : null
+  }
+
+  /** Liaisons de cet environnement : nom utilisé et service joint. */
+  async function linksOf(environmentId: string) {
+    return db
+      .select({ network: sharedNetworks })
+      .from(environmentNetworks)
+      .innerJoin(sharedNetworks, eq(sharedNetworks.id, environmentNetworks.sharedNetworkId))
+      .where(eq(environmentNetworks.environmentId, environmentId))
+  }
+
+  /** Services joignables depuis cet environnement : ceux des autres projets déjà déployés. */
+  app.get('/projects/:id/environments/:envId/link-targets', admin, async (request, reply) => {
+    const params = parseInput(z.object({ id: z.uuid(), envId: z.uuid() }), request.params, reply)
+    if (!params) return
+    const found = await environmentWithProject(params.envId)
+    if (!found || found.project.id !== params.id) {
+      return reply.code(404).send({ error: 'Environnement introuvable' })
+    }
+    const others = await db
+      .select({ environment: environments, project: projects })
+      .from(environments)
+      .innerJoin(projects, eq(projects.id, environments.projectId))
+      .where(ne(projects.id, found.project.id))
+      .orderBy(projects.name, environments.name)
+    const links = await linksOf(found.environment.id)
+    const targets: LinkTarget[] = []
+    for (const { environment, project } of others) {
+      const services = await deployedAnalysis(environment.id)
+      if (!services) continue
+      let running: Set<string> | null = null
+      try {
+        running = new Set(
+          (await host.listContainers(composeProjectName(project.slug, environment.slug)))
+            .filter((container) => container.state === 'running' && !container.relayFor)
+            .map((container) => container.service),
+        )
+      } catch {
+        // Docker injoignable : état inconnu.
+      }
+      for (const service of services) {
+        const kind = linkKind(service.image)
+        const link = links.find(
+          (item) =>
+            item.network.exposedByEnvironmentId === environment.id &&
+            item.network.service === service.name,
+        )
+        targets.push({
+          ...ref(project, environment),
+          service: service.name,
+          image: service.image,
+          kind,
+          port: LINK_KINDS[kind].port ?? declaredPort(service.ports),
+          running: running ? running.has(service.name) : false,
+          linkedAs: link?.network.alias ?? null,
+        })
+      }
+    }
+    return targets
+  })
+
   /**
-   * « Connecter à un projet » : en une fois, le service de l'autre projet est partagé (réseau créé
-   * s'il ne l'est pas déjà), cet environnement s'y abonne, et les conteneurs en marche des deux
-   * côtés sont branchés tout de suite, sans attendre leur prochain déploiement.
+   * « Connecter un service » : un réseau propre à cette liaison (deux applications reliées au
+   * même service ne se voient pas), au besoin une base et un utilisateur dédiés, la variable de
+   * connexion, et un redéploiement. Les conteneurs en marche sont branchés tout de suite.
    */
   app.post('/projects/:id/environments/:envId/links', admin, async (request, reply) => {
     const params = parseInput(z.object({ id: z.uuid(), envId: z.uuid() }), request.params, reply)
@@ -278,45 +360,109 @@ export const networkRoutes: FastifyPluginAsync<{ db: Database; host: HostDriver 
         field: 'targetEnvironmentId',
       })
     }
-    if (!(await checkService(target.environment.id, input.service))) {
+    const targetServices = await deployedAnalysis(target.environment.id)
+    const targetService = targetServices?.find((service) => service.name === input.service)
+    if (targetServices && !targetService) {
       return reply.code(400).send({
         error: `Le service « ${input.service} » n’existe pas dans le dernier déploiement de ${target.project.name}`,
         field: 'service',
       })
     }
+    const kind = linkKind(targetService?.image ?? null)
+    const port = LINK_KINDS[kind].port ?? input.port ?? declaredPort(targetService?.ports ?? [])
 
-    // Service déjà partagé : on réutilise son réseau et son nom.
-    let [network] = await db
-      .select()
-      .from(sharedNetworks)
-      .where(
-        and(
-          eq(sharedNetworks.exposedByEnvironmentId, target.environment.id),
-          eq(sharedNetworks.service, input.service),
-        ),
-      )
-      .limit(1)
-    if (!network) {
-      if (await aliasTaken(input.alias)) {
+    // Nom : unique parmi les services et les autres liaisons de cet environnement.
+    const links = await linksOf(found.environment.id)
+    const existing = links.find(
+      (item) =>
+        item.network.exposedByEnvironmentId === target.environment.id &&
+        item.network.service === input.service,
+    )?.network
+    const alias = existing?.alias ?? input.alias
+    if (!existing) {
+      const own = (await deployedAnalysis(found.environment.id))?.map((item) => item.name) ?? []
+      if (own.includes(alias) || links.some((item) => item.network.alias === alias)) {
         return reply.code(409).send({
-          error: 'Ce nom est déjà utilisé par une autre liaison : choisissez-en un autre',
+          error: `« ${alias} » est déjà le nom d’un service ou d’une autre liaison de ${found.project.name} : choisissez-en un autre`,
           field: 'alias',
         })
       }
-      const name = await freeNetworkName(input.alias)
+    }
+
+    const running = async (projectSlug: string, environmentSlug: string) =>
+      (await host.listContainers(composeProjectName(projectSlug, environmentSlug))).filter(
+        (container) => container.state === 'running' && !container.relayFor,
+      )
+
+    // Base et utilisateur dédiés : avant tout le reste, pour ne rien laisser à moitié fait.
+    let credentials: { user: string; password: string; database: string } | null = null
+    if (input.access === 'dedicated') {
+      if (!LINK_KINDS[kind].dedicated) {
+        return reply.code(400).send({
+          error: `${LINK_KINDS[kind].label} : pas de base dédiée à créer`,
+          field: 'access',
+        })
+      }
+      const name = input.database ?? linkDatabaseName(found.project.slug)
+      let container: { id: string } | undefined
+      try {
+        container = (await running(target.project.slug, target.environment.slug)).find(
+          (item) => item.service === input.service,
+        )
+      } catch {
+        container = undefined
+      }
+      if (!container) {
+        return reply.code(409).send({
+          error: `${input.service} de ${target.project.name} n’est pas en marche : démarrez-le pour créer la base`,
+          field: 'access',
+        })
+      }
+      const password = randomPassword()
+      try {
+        await provisionDatabase(
+          { runner, dockerSocket, cwd: dataDir },
+          container.id,
+          kind as 'postgres' | 'mysql' | 'mariadb' | 'mongo',
+          name,
+          password,
+        )
+      } catch (error) {
+        return reply.code(502).send({
+          error: `Création de la base « ${name} » impossible : ${error instanceof Error ? error.message : error}`,
+          field: 'access',
+        })
+      }
+      credentials = { user: name, password, database: name }
+      await auditAction(
+        db,
+        request,
+        'environment.links.database',
+        `${target.project.slug}/${input.service}`,
+        {
+          database: name,
+          for: `${found.project.slug}/${found.environment.slug}`,
+        },
+      )
+    }
+
+    let network = existing
+    if (!network) {
+      const name = await freeNetworkName(`${found.project.slug}-${alias}`)
       ;[network] = await db
         .insert(sharedNetworks)
         .values({
           name,
           exposedByEnvironmentId: target.environment.id,
           service: input.service,
-          alias: input.alias,
+          alias,
+          description: `${found.project.name} → ${input.service} de ${target.project.name}`,
         })
         .returning()
       await auditAction(db, request, 'network.create', name, {
         exposedBy: `${target.project.slug}/${target.environment.slug}`,
         service: input.service,
-        alias: input.alias,
+        alias,
       })
     }
     await db
@@ -340,14 +486,37 @@ export const networkRoutes: FastifyPluginAsync<{ db: Database; host: HostDriver 
       { network: network!.name, service: `${target.project.slug}/${input.service}` },
     )
 
+    // Variable de connexion, secrète, propre à cet environnement.
+    if (input.variable) {
+      const value = linkUrl(kind, alias, port, credentials)
+      await db
+        .insert(envVariables)
+        .values({
+          projectId: found.project.id,
+          environmentId: found.environment.id,
+          key: input.variable,
+          valueEnc: box.encrypt(value),
+          secret: true,
+        })
+        .onConflictDoUpdate({
+          target: [envVariables.projectId, envVariables.environmentId, envVariables.key],
+          set: { valueEnc: box.encrypt(value), secret: true },
+        })
+      await auditAction(
+        db,
+        request,
+        'variables.update',
+        `${found.project.slug}/${found.environment.slug}`,
+        {
+          keys: [input.variable],
+        },
+      )
+    }
+
     // Branchement immédiat des conteneurs en marche ; sinon au prochain déploiement.
     let applied = false
     let detail: string | null = null
     try {
-      const running = async (projectSlug: string, environmentSlug: string) =>
-        (await host.listContainers(composeProjectName(projectSlug, environmentSlug))).filter(
-          (container) => container.state === 'running' && !container.relayFor,
-        )
       const exposed = (await running(target.project.slug, target.environment.slug)).filter(
         (container) => container.service === input.service,
       )
@@ -356,20 +525,35 @@ export const networkRoutes: FastifyPluginAsync<{ db: Database; host: HostDriver 
       )
       if (!exposed.length) {
         detail = `${input.service} de ${target.project.name} n’est pas en marche : la liaison se fera à son prochain démarrage par Vercio (déploiement).`
-      } else {
+      } else if (!existing) {
         await host.connectNetwork(sharedNetworkDockerName(network!.name), [
-          ...exposed.map((container) => ({ id: container.id, aliases: [network!.alias] })),
+          ...exposed.map((container) => ({ id: container.id, aliases: [alias] })),
           ...subscribers.map((container) => ({ id: container.id, aliases: [] })),
         ])
+        applied = true
+      } else {
+        // Liaison existante : seuls les services nouvellement choisis sont à brancher.
         applied = true
       }
     } catch (error) {
       detail = `Branchement immédiat impossible (${error instanceof Error ? error.message : error}) : la liaison se fera au prochain déploiement.`
     }
+
+    let deploymentId: string | null = null
+    if (input.redeploy) {
+      const deployment = await app.deployments.request(found.environment.id, {
+        trigger: 'user',
+        userId: request.user?.id ?? null,
+      })
+      deploymentId = deployment.id
+    }
     const result: EnvironmentLinkResult = {
       network: (await views()).find((view) => view.id === network!.id)!,
       applied,
       detail,
+      database: credentials ? { name: credentials.database, user: credentials.user } : null,
+      variable: input.variable,
+      deploymentId,
     }
     return reply.code(201).send(result)
   })

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { variableKeySchema } from './projects.js'
 
 /** Nom d'un réseau partagé : `postgres-prod` donne le réseau Docker `vercio-shared-postgres-prod`. */
 export const sharedNetworkNameSchema = z
@@ -64,13 +65,99 @@ export type EnvironmentNetworksInput = z.input<typeof environmentNetworksSchema>
  * Liaison d'un environnement à un service d'un autre projet (« Connecter à un projet ») : le
  * réseau partagé est créé au besoin, l'abonnement ajouté, et les conteneurs en marche branchés.
  */
+/** Type de service joint, d'après son image : il décide du port, de l'adresse et des accès. */
+export type LinkKind = 'postgres' | 'mysql' | 'mariadb' | 'mongo' | 'redis' | 'service'
+
+export const LINK_KINDS: Record<
+  LinkKind,
+  { label: string; port: number | null; variable: string; dedicated: boolean }
+> = {
+  postgres: { label: 'PostgreSQL', port: 5432, variable: 'DATABASE_URL', dedicated: true },
+  mysql: { label: 'MySQL', port: 3306, variable: 'DATABASE_URL', dedicated: true },
+  mariadb: { label: 'MariaDB', port: 3306, variable: 'DATABASE_URL', dedicated: true },
+  mongo: { label: 'MongoDB', port: 27017, variable: 'MONGODB_URI', dedicated: true },
+  redis: { label: 'Redis', port: 6379, variable: 'REDIS_URL', dedicated: false },
+  service: { label: 'Service', port: null, variable: 'SERVICE_URL', dedicated: false },
+}
+
+/** Base et utilisateur dédiés : `[a-z][a-z0-9_]*`, 32 caractères au plus. */
+export const linkDatabaseNameSchema = z.string().regex(/^[a-z][a-z0-9_]{0,31}$/, {
+  message: 'Lettres minuscules, chiffres et _ (32 caractères au plus, une lettre d’abord)',
+})
+
+/** `planny-v2` → `planny_v2` : nom de base et d'utilisateur proposé pour un projet. */
+export function linkDatabaseName(projectSlug: string): string {
+  const name = projectSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return (/^[a-z]/.test(name) ? name : `app_${name}`).slice(0, 32).replace(/_+$/, '') || 'app'
+}
+
+/**
+ * Adresse à donner à l'application. Avec des identifiants dédiés : URL complète ; sinon
+ * l'adresse seule, à compléter dans les variables si le service demande un mot de passe.
+ */
+export function linkUrl(
+  kind: LinkKind,
+  host: string,
+  port: number | null,
+  credentials?: { user: string; password: string; database: string } | null,
+): string {
+  const address = port ? `${host}:${port}` : host
+  const auth = credentials
+    ? `${encodeURIComponent(credentials.user)}:${encodeURIComponent(credentials.password)}@`
+    : ''
+  const database = credentials ? `/${credentials.database}` : ''
+  switch (kind) {
+    case 'postgres':
+      return `postgresql://${auth}${address}${database}`
+    case 'mysql':
+    case 'mariadb':
+      return `mysql://${auth}${address}${database}`
+    case 'mongo':
+      return `mongodb://${auth}${address}${database}${credentials ? `?authSource=${credentials.database}` : ''}`
+    case 'redis':
+      return `redis://${address}`
+    case 'service':
+      return `http://${address}`
+  }
+}
+
+/** Service qu'un environnement peut joindre : celui d'un autre projet, déjà déployé. */
+export interface LinkTarget extends EnvironmentRef {
+  service: string
+  image: string | null
+  kind: LinkKind
+  /** Port d'écoute : celui du type, ou le premier port déclaré dans le fichier Compose. */
+  port: number | null
+  running: boolean
+  /** Déjà relié à cet environnement : sous ce nom. */
+  linkedAs: string | null
+}
+
+/**
+ * « Connecter un service » : un réseau propre à cette liaison (les applications reliées au même
+ * service ne se voient pas entre elles), au besoin une base et un utilisateur dédiés, la
+ * variable de connexion enregistrée, et un redéploiement pour la prendre en compte.
+ */
 export const environmentLinkSchema = z.object({
   targetEnvironmentId: z.uuid({ message: 'Projet requis' }),
   service: z.string().trim().min(1, { message: 'Service requis' }).max(100),
-  /** Nom sous lequel le service est joint ; ignoré si ce service est déjà partagé. */
+  /** Nom sous lequel le service est joint depuis cet environnement. */
   alias: sharedNetworkAliasSchema,
   /** Services de cet environnement reliés ; null : tous. */
   services: z.array(z.string().min(1).max(100)).min(1).nullable(),
+  /** Bases : créer une base et un utilisateur dédiés (`dedicated`), ou l'adresse seule. */
+  access: z.enum(['dedicated', 'none']).default('none'),
+  /** Nom de la base et de l'utilisateur dédiés. */
+  database: linkDatabaseNameSchema.optional(),
+  /** Variable de connexion enregistrée (secrète) dans cet environnement ; null : aucune. */
+  variable: variableKeySchema.nullable().default(null),
+  /** Port joint, si le type ne le donne pas (service HTTP). */
+  port: z.number().int().min(1).max(65535).nullable().default(null),
+  /** Redéployer cet environnement ensuite (la variable n'est lue qu'au démarrage). */
+  redeploy: z.boolean().default(false),
 })
 export type EnvironmentLinkInput = z.input<typeof environmentLinkSchema>
 
@@ -80,6 +167,11 @@ export interface EnvironmentLinkResult {
   applied: boolean
   /** Raison quand le branchement immédiat n'a pas pu se faire. */
   detail: string | null
+  /** Base et utilisateur dédiés créés (ou mis à jour). */
+  database: { name: string; user: string } | null
+  /** Variable enregistrée (sa valeur n'est jamais renvoyée). */
+  variable: string | null
+  deploymentId: string | null
 }
 
 export interface EnvironmentRef {
